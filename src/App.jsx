@@ -142,6 +142,7 @@ function AnswerInput({ value, onChange, state, width = 64, suffix }) {
   return (
     <span className="ans-wrap">
       <input
+        type="text" 
         className={`ans-input ${state === "ok" ? "ans-input--ok" : state === "bad" ? "ans-input--bad" : ""}`}
         style={{ width }}
         value={value}
@@ -154,6 +155,7 @@ function AnswerInput({ value, onChange, state, width = 64, suffix }) {
     </span>
   );
 }
+
 
 /* ---------------------------------------------------------------- */
 /* Tabla de frecuencias (ejercicio)                                   */
