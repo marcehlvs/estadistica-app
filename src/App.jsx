@@ -3,7 +3,14 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
 } from "recharts";
-import { Check, X, RotateCcw, Eye, EyeOff, Sparkles } from "lucide-react";
+import { RotateCcw, Eye, EyeOff, Sparkles } from "lucide-react";
+
+import { ungroupedRows, groupedRows, computeStats, round } from "./stats.js";
+import { AnswerInput, Cell_, MeasureCard } from "./ui.jsx";
+import GroupedMeasures from "./GroupedMeasures.jsx";
+import Evaluation from "./Evaluation.jsx";
+import { GROUPED_MEASURE_SETS } from "./groupedExamples.js";
+import "./extras.css";
 
 /* ---------------------------------------------------------------- */
 /* Datos                                                             */
@@ -50,75 +57,6 @@ const GROUPED_SETS = [
 const COLORS = ["#5FA8A0", "#E8B33D", "#D97D7D", "#8FBF7F", "#8C7BC4", "#4F8FBF", "#CB9F5A"];
 
 /* ---------------------------------------------------------------- */
-/* Cálculos                                                           */
-/* ---------------------------------------------------------------- */
-
-function ungroupedRows(data) {
-  const n = data.length;
-  const values = [...new Set(data)].sort((a, b) => a - b);
-  let cum = 0;
-  return values.map((v) => {
-    const fi = data.filter((x) => x === v).length;
-    cum += fi;
-    return { label: String(v), fi, fr: Math.round((fi / n) * 1000) / 10, fa: cum };
-  });
-}
-
-function getIntervals(data, width) {
-  const min = Math.min(...data);
-  const max = Math.max(...data);
-  let start = Math.floor(min / width) * width;
-  let end = Math.ceil(max / width) * width;
-  if (end === max) end += width;
-  const intervals = [];
-  for (let l = start; l < end; l += width) intervals.push([l, l + width]);
-  return intervals;
-}
-
-function groupedRows(data, width) {
-  const n = data.length;
-  const intervals = getIntervals(data, width);
-  let cum = 0;
-  return intervals.map(([l, r], idx) => {
-    const isLast = idx === intervals.length - 1;
-    const fi = data.filter((x) => (isLast ? x >= l && x <= r : x >= l && x < r)).length;
-    cum += fi;
-    return {
-      label: `[${l} - ${r}${isLast ? "]" : ")"}`,
-      mark: (l + r) / 2,
-      fi,
-      fr: Math.round((fi / n) * 1000) / 10,
-      fa: cum,
-    };
-  });
-}
-
-function computeStats(data) {
-  const n = data.length;
-  const sorted = [...data].sort((a, b) => a - b);
-  const sum = data.reduce((a, b) => a + b, 0);
-  const mean = sum / n;
-  const mid = Math.floor(n / 2);
-  const median = n % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-  const freqMap = {};
-  data.forEach((x) => (freqMap[x] = (freqMap[x] || 0) + 1));
-  const maxFreq = Math.max(...Object.values(freqMap));
-  const modes = Object.keys(freqMap)
-    .filter((k) => freqMap[k] === maxFreq)
-    .map(Number)
-    .sort((a, b) => a - b);
-  const range = Math.max(...data) - Math.min(...data);
-  const variance = data.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
-  const stdDev = Math.sqrt(variance);
-  return { n, sorted, sum, mean, median, modes, range, variance, stdDev };
-}
-
-function round(x, d = 2) {
-  const f = 10 ** d;
-  return Math.round(x * f) / f;
-}
-
-/* ---------------------------------------------------------------- */
 /* Componentes chicos                                                */
 /* ---------------------------------------------------------------- */
 
@@ -129,33 +67,6 @@ function ChalkTab({ active, onClick, children }) {
     </button>
   );
 }
-
-function Cell_({ children, state }) {
-  return (
-    <td className={`fc ${state === "ok" ? "fc--ok" : state === "bad" ? "fc--bad" : ""}`}>
-      {children}
-    </td>
-  );
-}
-
-function AnswerInput({ value, onChange, state, width = 64, suffix }) {
-  return (
-    <span className="ans-wrap">
-      <input
-        type="text" 
-        className={`ans-input ${state === "ok" ? "ans-input--ok" : state === "bad" ? "ans-input--bad" : ""}`}
-        style={{ width }}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        inputMode="decimal"
-      />
-      {suffix && <span className="ans-suffix">{suffix}</span>}
-      {state === "ok" && <Check size={14} className="ans-icon ans-icon--ok" />}
-      {state === "bad" && <X size={14} className="ans-icon ans-icon--bad" />}
-    </span>
-  );
-}
-
 
 /* ---------------------------------------------------------------- */
 /* Tabla de frecuencias (ejercicio)                                   */
@@ -361,28 +272,6 @@ function FrequencyExercise({ set, hasMark, setIndex, onCycle }) {
 /* Medidas de posición y dispersión                                    */
 /* ---------------------------------------------------------------- */
 
-function MeasureCard({ label, formula, value, unit, children, open, onToggle }) {
-  return (
-    <div className="measure-card">
-      <div className="measure-card__head" onClick={onToggle}>
-        <div>
-          <div className="measure-card__label">{label}</div>
-          <div className="measure-card__value">
-            {value} <span className="measure-card__unit">{unit}</span>
-          </div>
-        </div>
-        <span className="measure-card__toggle">{open ? "−" : "+"}</span>
-      </div>
-      {open && (
-        <div className="measure-card__body">
-          <div className="measure-card__formula">{formula}</div>
-          {children}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function MeasuresModule({ set, onCycle }) {
   const stats = useMemo(() => computeStats(set.data), [set]);
   const [open, setOpen] = useState({});
@@ -535,6 +424,8 @@ export default function App() {
   const [ungroupedIdx, setUngroupedIdx] = useState(0);
   const [groupedIdx, setGroupedIdx] = useState(0);
   const [measuresIdx, setMeasuresIdx] = useState(0);
+  const [measuresMode, setMeasuresMode] = useState("sueltos");
+  const [groupedMeasuresIdx, setGroupedMeasuresIdx] = useState(0);
 
   return (
     <div className="board-app">
@@ -726,6 +617,9 @@ export default function App() {
         <ChalkTab active={tab === "medidas"} onClick={() => setTab("medidas")}>
           3 · Posición y dispersión
         </ChalkTab>
+        <ChalkTab active={tab === "evaluacion"} onClick={() => setTab("evaluacion")}>
+          4 · Modo evaluación
+        </ChalkTab>
       </div>
 
       <div className="paper">
@@ -748,12 +642,37 @@ export default function App() {
           />
         )}
         {tab === "medidas" && (
-          <MeasuresModule
-            key={`medidas-${measuresIdx}`}
-            set={UNGROUPED_SETS[measuresIdx]}
-            onCycle={() => setMeasuresIdx((i) => (i + 1) % UNGROUPED_SETS.length)}
-          />
+          <>
+            <div className="seg">
+              <button
+                className={`seg__btn ${measuresMode === "sueltos" ? "seg__btn--active" : ""}`}
+                onClick={() => setMeasuresMode("sueltos")}
+              >
+                Datos sueltos
+              </button>
+              <button
+                className={`seg__btn ${measuresMode === "agrupados" ? "seg__btn--active" : ""}`}
+                onClick={() => setMeasuresMode("agrupados")}
+              >
+                Datos agrupados
+              </button>
+            </div>
+            {measuresMode === "sueltos" ? (
+              <MeasuresModule
+                key={`medidas-${measuresIdx}`}
+                set={UNGROUPED_SETS[measuresIdx]}
+                onCycle={() => setMeasuresIdx((i) => (i + 1) % UNGROUPED_SETS.length)}
+              />
+            ) : (
+              <GroupedMeasures
+                key={`medidas-agrupadas-${groupedMeasuresIdx}`}
+                set={GROUPED_MEASURE_SETS[groupedMeasuresIdx]}
+                onCycle={() => setGroupedMeasuresIdx((i) => (i + 1) % GROUPED_MEASURE_SETS.length)}
+              />
+            )}
+          </>
         )}
+        {tab === "evaluacion" && <Evaluation />}
       </div>
     </div>
   );

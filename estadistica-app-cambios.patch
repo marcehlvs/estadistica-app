@@ -1,0 +1,1645 @@
+From 26bb13bcff8d43aedc595cff8821af25767b8a10 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 23 Sep 2026 22:56:04 +0000
+Subject: [PATCH] =?UTF-8?q?Posici=C3=B3n=20y=20dispersi=C3=B3n=20para=20da?=
+ =?UTF-8?q?tos=20agrupados=20(Sturges)=20y=20modo=20evaluaci=C3=B3n?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- stats.js: cálculo separado de la UI; Sturges, tabla agrupada, percentiles y moda por interpolación, generador de ejercicios (n <= 150)
+- ui.jsx: componentes compartidos (AnswerInput, MeasureCard, Cell_, DataBox)
+- GroupedMeasures.jsx: solapa 3 con selector sueltos/agrupados y 4 ejemplos nuevos
+- Evaluation.jsx: solapa 4 con dos ejercicios completos y corrección
+---
+ src/App.jsx             | 167 ++++-----------
+ src/Evaluation.jsx      | 337 ++++++++++++++++++++++++++++++
+ src/GroupedMeasures.jsx | 443 ++++++++++++++++++++++++++++++++++++++++
+ src/extras.css          | 127 ++++++++++++
+ src/groupedExamples.js  |  28 +++
+ src/stats.js            | 340 ++++++++++++++++++++++++++++++
+ src/ui.jsx              |  81 ++++++++
+ 7 files changed, 1399 insertions(+), 124 deletions(-)
+ create mode 100644 src/Evaluation.jsx
+ create mode 100644 src/GroupedMeasures.jsx
+ create mode 100644 src/extras.css
+ create mode 100644 src/groupedExamples.js
+ create mode 100644 src/stats.js
+ create mode 100644 src/ui.jsx
+
+diff --git a/src/App.jsx b/src/App.jsx
+index c023db0..8636ac1 100644
+--- a/src/App.jsx
++++ b/src/App.jsx
+@@ -3,7 +3,14 @@ import {
+   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+   PieChart, Pie, Cell, Legend,
+ } from "recharts";
+-import { Check, X, RotateCcw, Eye, EyeOff, Sparkles } from "lucide-react";
++import { RotateCcw, Eye, EyeOff, Sparkles } from "lucide-react";
++
++import { ungroupedRows, groupedRows, computeStats, round } from "./stats.js";
++import { AnswerInput, Cell_, MeasureCard } from "./ui.jsx";
++import GroupedMeasures from "./GroupedMeasures.jsx";
++import Evaluation from "./Evaluation.jsx";
++import { GROUPED_MEASURE_SETS } from "./groupedExamples.js";
++import "./extras.css";
+ 
+ /* ---------------------------------------------------------------- */
+ /* Datos                                                             */
+@@ -49,75 +56,6 @@ const GROUPED_SETS = [
+ 
+ const COLORS = ["#5FA8A0", "#E8B33D", "#D97D7D", "#8FBF7F", "#8C7BC4", "#4F8FBF", "#CB9F5A"];
+ 
+-/* ---------------------------------------------------------------- */
+-/* Cálculos                                                           */
+-/* ---------------------------------------------------------------- */
+-
+-function ungroupedRows(data) {
+-  const n = data.length;
+-  const values = [...new Set(data)].sort((a, b) => a - b);
+-  let cum = 0;
+-  return values.map((v) => {
+-    const fi = data.filter((x) => x === v).length;
+-    cum += fi;
+-    return { label: String(v), fi, fr: Math.round((fi / n) * 1000) / 10, fa: cum };
+-  });
+-}
+-
+-function getIntervals(data, width) {
+-  const min = Math.min(...data);
+-  const max = Math.max(...data);
+-  let start = Math.floor(min / width) * width;
+-  let end = Math.ceil(max / width) * width;
+-  if (end === max) end += width;
+-  const intervals = [];
+-  for (let l = start; l < end; l += width) intervals.push([l, l + width]);
+-  return intervals;
+-}
+-
+-function groupedRows(data, width) {
+-  const n = data.length;
+-  const intervals = getIntervals(data, width);
+-  let cum = 0;
+-  return intervals.map(([l, r], idx) => {
+-    const isLast = idx === intervals.length - 1;
+-    const fi = data.filter((x) => (isLast ? x >= l && x <= r : x >= l && x < r)).length;
+-    cum += fi;
+-    return {
+-      label: `[${l} - ${r}${isLast ? "]" : ")"}`,
+-      mark: (l + r) / 2,
+-      fi,
+-      fr: Math.round((fi / n) * 1000) / 10,
+-      fa: cum,
+-    };
+-  });
+-}
+-
+-function computeStats(data) {
+-  const n = data.length;
+-  const sorted = [...data].sort((a, b) => a - b);
+-  const sum = data.reduce((a, b) => a + b, 0);
+-  const mean = sum / n;
+-  const mid = Math.floor(n / 2);
+-  const median = n % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+-  const freqMap = {};
+-  data.forEach((x) => (freqMap[x] = (freqMap[x] || 0) + 1));
+-  const maxFreq = Math.max(...Object.values(freqMap));
+-  const modes = Object.keys(freqMap)
+-    .filter((k) => freqMap[k] === maxFreq)
+-    .map(Number)
+-    .sort((a, b) => a - b);
+-  const range = Math.max(...data) - Math.min(...data);
+-  const variance = data.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
+-  const stdDev = Math.sqrt(variance);
+-  return { n, sorted, sum, mean, median, modes, range, variance, stdDev };
+-}
+-
+-function round(x, d = 2) {
+-  const f = 10 ** d;
+-  return Math.round(x * f) / f;
+-}
+-
+ /* ---------------------------------------------------------------- */
+ /* Componentes chicos                                                */
+ /* ---------------------------------------------------------------- */
+@@ -130,33 +68,6 @@ function ChalkTab({ active, onClick, children }) {
+   );
+ }
+ 
+-function Cell_({ children, state }) {
+-  return (
+-    <td className={`fc ${state === "ok" ? "fc--ok" : state === "bad" ? "fc--bad" : ""}`}>
+-      {children}
+-    </td>
+-  );
+-}
+-
+-function AnswerInput({ value, onChange, state, width = 64, suffix }) {
+-  return (
+-    <span className="ans-wrap">
+-      <input
+-        type="text" 
+-        className={`ans-input ${state === "ok" ? "ans-input--ok" : state === "bad" ? "ans-input--bad" : ""}`}
+-        style={{ width }}
+-        value={value}
+-        onChange={(e) => onChange(e.target.value)}
+-        inputMode="decimal"
+-      />
+-      {suffix && <span className="ans-suffix">{suffix}</span>}
+-      {state === "ok" && <Check size={14} className="ans-icon ans-icon--ok" />}
+-      {state === "bad" && <X size={14} className="ans-icon ans-icon--bad" />}
+-    </span>
+-  );
+-}
+-
+-
+ /* ---------------------------------------------------------------- */
+ /* Tabla de frecuencias (ejercicio)                                   */
+ /* ---------------------------------------------------------------- */
+@@ -361,28 +272,6 @@ function FrequencyExercise({ set, hasMark, setIndex, onCycle }) {
+ /* Medidas de posición y dispersión                                    */
+ /* ---------------------------------------------------------------- */
+ 
+-function MeasureCard({ label, formula, value, unit, children, open, onToggle }) {
+-  return (
+-    <div className="measure-card">
+-      <div className="measure-card__head" onClick={onToggle}>
+-        <div>
+-          <div className="measure-card__label">{label}</div>
+-          <div className="measure-card__value">
+-            {value} <span className="measure-card__unit">{unit}</span>
+-          </div>
+-        </div>
+-        <span className="measure-card__toggle">{open ? "−" : "+"}</span>
+-      </div>
+-      {open && (
+-        <div className="measure-card__body">
+-          <div className="measure-card__formula">{formula}</div>
+-          {children}
+-        </div>
+-      )}
+-    </div>
+-  );
+-}
+-
+ function MeasuresModule({ set, onCycle }) {
+   const stats = useMemo(() => computeStats(set.data), [set]);
+   const [open, setOpen] = useState({});
+@@ -535,6 +424,8 @@ export default function App() {
+   const [ungroupedIdx, setUngroupedIdx] = useState(0);
+   const [groupedIdx, setGroupedIdx] = useState(0);
+   const [measuresIdx, setMeasuresIdx] = useState(0);
++  const [measuresMode, setMeasuresMode] = useState("sueltos");
++  const [groupedMeasuresIdx, setGroupedMeasuresIdx] = useState(0);
+ 
+   return (
+     <div className="board-app">
+@@ -726,6 +617,9 @@ export default function App() {
+         <ChalkTab active={tab === "medidas"} onClick={() => setTab("medidas")}>
+           3 · Posición y dispersión
+         </ChalkTab>
++        <ChalkTab active={tab === "evaluacion"} onClick={() => setTab("evaluacion")}>
++          4 · Modo evaluación
++        </ChalkTab>
+       </div>
+ 
+       <div className="paper">
+@@ -748,12 +642,37 @@ export default function App() {
+           />
+         )}
+         {tab === "medidas" && (
+-          <MeasuresModule
+-            key={`medidas-${measuresIdx}`}
+-            set={UNGROUPED_SETS[measuresIdx]}
+-            onCycle={() => setMeasuresIdx((i) => (i + 1) % UNGROUPED_SETS.length)}
+-          />
++          <>
++            <div className="seg">
++              <button
++                className={`seg__btn ${measuresMode === "sueltos" ? "seg__btn--active" : ""}`}
++                onClick={() => setMeasuresMode("sueltos")}
++              >
++                Datos sueltos
++              </button>
++              <button
++                className={`seg__btn ${measuresMode === "agrupados" ? "seg__btn--active" : ""}`}
++                onClick={() => setMeasuresMode("agrupados")}
++              >
++                Datos agrupados
++              </button>
++            </div>
++            {measuresMode === "sueltos" ? (
++              <MeasuresModule
++                key={`medidas-${measuresIdx}`}
++                set={UNGROUPED_SETS[measuresIdx]}
++                onCycle={() => setMeasuresIdx((i) => (i + 1) % UNGROUPED_SETS.length)}
++              />
++            ) : (
++              <GroupedMeasures
++                key={`medidas-agrupadas-${groupedMeasuresIdx}`}
++                set={GROUPED_MEASURE_SETS[groupedMeasuresIdx]}
++                onCycle={() => setGroupedMeasuresIdx((i) => (i + 1) % GROUPED_MEASURE_SETS.length)}
++              />
++            )}
++          </>
+         )}
++        {tab === "evaluacion" && <Evaluation />}
+       </div>
+     </div>
+   );
+diff --git a/src/Evaluation.jsx b/src/Evaluation.jsx
+new file mode 100644
+index 0000000..cd06574
+--- /dev/null
++++ b/src/Evaluation.jsx
+@@ -0,0 +1,337 @@
++import { useMemo, useState } from "react";
++import { RotateCcw, Shuffle, Send } from "lucide-react";
++import { AnswerInput, Cell_, DataBox } from "./ui.jsx";
++import { GroupedWorkedSolution } from "./GroupedMeasures.jsx";
++import {
++  analyzeGrouped,
++  computeStats,
++  makeGroupedExercise,
++  makeUngroupedExercise,
++  parseNum,
++  tolFor,
++  ungroupedRows,
++  round,
++} from "./stats.js";
++
++/* ---------------------------------------------------------------- */
++/* Respuestas esperadas                                                */
++/* ---------------------------------------------------------------- */
++
++const exact = (value) => ({ value, tol: 0.001, decimals: 0 });
++const approx = (value, decimals = 2) => ({ value, tol: tolFor(value), decimals });
++
++function buildExpected(A, B) {
++  const e = {};
++
++  // Ejercicio 1 · datos sueltos
++  A.rows.forEach((r, i) => {
++    e[`a_fi_${i}`] = exact(r.fi);
++    e[`a_fr_${i}`] = { value: r.fr, tol: 0.6, decimals: 1 };
++    e[`a_Fi_${i}`] = exact(r.fa);
++  });
++  e.a_mean = approx(A.st.mean);
++  e.a_median = approx(A.st.median);
++  e.a_mode = exact(A.st.modes[0]); // el generador garantiza moda única
++  e.a_range = exact(A.st.range);
++  e.a_var = approx(A.st.variance);
++  e.a_sd = approx(A.st.stdDev);
++
++  // Ejercicio 2 · datos agrupados
++  e.b_R = exact(B.s.range);
++  e.b_k = exact(B.k);
++  e.b_A = exact(B.A);
++  B.rows.forEach((r, i) => {
++    e[`b_mark_${i}`] = { value: r.mark, tol: 0.01, decimals: 1 };
++    e[`b_fi_${i}`] = exact(r.fi);
++    e[`b_Fi_${i}`] = exact(r.Fi);
++  });
++  e.b_mean = approx(B.mean);
++  e.b_median = approx(B.median.value);
++  e.b_mode = approx(B.mode.value);
++  e.b_q1 = approx(B.q1.value);
++  e.b_q3 = approx(B.q3.value);
++  e.b_range = exact(B.range);
++  e.b_var = approx(B.variance);
++  e.b_sd = approx(B.sd);
++  e.b_cv = { value: B.cv, tol: 0.1, decimals: 1 };
++  return e;
++}
++
++/* ---------------------------------------------------------------- */
++/* Hoja de evaluación                                                  */
++/* ---------------------------------------------------------------- */
++
++function EvaluationSheet({ evalNo, onNew, onRetry }) {
++  const exA = useMemo(() => makeUngroupedExercise(evalNo), [evalNo]);
++  const exB = useMemo(() => makeGroupedExercise(evalNo), [evalNo]);
++  const A = useMemo(() => ({ rows: ungroupedRows(exA.data), st: computeStats(exA.data) }), [exA]);
++  const B = useMemo(() => analyzeGrouped(exB.data), [exB]);
++  const expected = useMemo(() => buildExpected(A, B), [A, B]);
++
++  const [answers, setAnswers] = useState({});
++  const [submitted, setSubmitted] = useState(false);
++  const [tableOpen, setTableOpen] = useState(false);
++
++  const results = useMemo(() => {
++    if (!submitted) return null;
++    const r = {};
++    for (const [key, spec] of Object.entries(expected)) {
++      const v = parseNum(answers[key]);
++      r[key] = Number.isFinite(v) && Math.abs(v - spec.value) <= spec.tol;
++    }
++    return r;
++  }, [submitted, answers, expected]);
++
++  const keysA = Object.keys(expected).filter((k) => k.startsWith("a_"));
++  const keysB = Object.keys(expected).filter((k) => k.startsWith("b_"));
++  const scoreOf = (keys) => (results ? keys.filter((k) => results[k]).length : 0);
++  const scoreA = scoreOf(keysA);
++  const scoreB = scoreOf(keysB);
++  const total = keysA.length + keysB.length;
++  const pct = Math.round(((scoreA + scoreB) / total) * 100);
++  const tone = pct >= 85 ? "good" : pct >= 60 ? "mid" : "low";
++
++  const stateOf = (key) => (results ? (results[key] ? "ok" : "bad") : undefined);
++
++  const field = (key, { width = 64, suffix } = {}) => (
++    <AnswerInput
++      value={answers[key] ?? ""}
++      onChange={(v) => setAnswers((prev) => ({ ...prev, [key]: v }))}
++      state={stateOf(key)}
++      hint={round(expected[key].value, expected[key].decimals)}
++      width={width}
++      suffix={suffix}
++      disabled={submitted}
++    />
++  );
++
++  const measure = (label, formula, key, suffix) => (
++    <div className="eval-field">
++      <span className="eval-field__label">{label}</span>
++      <span className="eval-field__formula">{formula}</span>
++      {field(key, { width: 72, suffix })}
++    </div>
++  );
++
++  const showTable = tableOpen || submitted;
++  const st = A.st;
++  const isEven = st.n % 2 === 0;
++
++  return (
++    <div>
++      <div className="eval-banner">
++        <div>
++          <h3>Modo evaluación · N.º {evalNo}</h3>
++          <p>
++            Dos ejercicios completos: uno con datos sin agrupar y otro con datos agrupados. Resolvé en
++            papel, con calculadora, y cargá tus resultados. Se acepta un pequeño margen por redondeo.
++          </p>
++        </div>
++        <button className="btn btn--ghost" onClick={onNew}>
++          <Shuffle size={14} /> nueva evaluación
++        </button>
++      </div>
++
++      {/* ---------------- Ejercicio 1 ---------------- */}
++      <div className="eval-section">
++        <span className="eval-badge">Ejercicio 1 · datos sin agrupar</span>
++        <h3 className="ex-title">{exA.title}</h3>
++        <p className="ex-prompt">{exA.prompt}</p>
++
++        <DataBox label="Datos relevados" data={exA.data} />
++
++        <h4 className="eval-subtitle">a) Tabla de frecuencias</h4>
++        <div className="table-wrap">
++          <table className="freq-table">
++            <thead>
++              <tr>
++                <th>Valor (xᵢ)</th>
++                <th>Frec. absoluta (fᵢ)</th>
++                <th>Frec. relativa (%)</th>
++                <th>Frec. acumulada (Fᵢ)</th>
++              </tr>
++            </thead>
++            <tbody>
++              {A.rows.map((r, i) => (
++                <tr key={i}>
++                  <td className="fc fc--label">{r.label}</td>
++                  <Cell_ state={stateOf(`a_fi_${i}`)}>{field(`a_fi_${i}`, { width: 48 })}</Cell_>
++                  <Cell_ state={stateOf(`a_fr_${i}`)}>{field(`a_fr_${i}`, { width: 52, suffix: "%" })}</Cell_>
++                  <Cell_ state={stateOf(`a_Fi_${i}`)}>{field(`a_Fi_${i}`, { width: 48 })}</Cell_>
++                </tr>
++              ))}
++            </tbody>
++          </table>
++        </div>
++
++        <h4 className="eval-subtitle">b) Medidas de posición</h4>
++        <div className="eval-fields">
++          {measure("Media", "x̄ = Σ xᵢ·fᵢ / n", "a_mean", exA.unit)}
++          {measure("Mediana", "valor central", "a_median", exA.unit)}
++          {measure("Moda", "el que más se repite", "a_mode", exA.unit)}
++        </div>
++
++        <h4 className="eval-subtitle">c) Medidas de dispersión</h4>
++        <div className="eval-fields">
++          {measure("Rango", "máximo − mínimo", "a_range", exA.unit)}
++          {measure("Varianza", "σ² = Σ fᵢ(xᵢ − x̄)² / n", "a_var")}
++          {measure("Desvío estándar", "σ = √σ²", "a_sd", exA.unit)}
++        </div>
++
++        {submitted && (
++          <div className="hand-calc">
++            <p className="hc-title">Resolución del ejercicio 1</p>
++            <p>
++              x̄ = {round(st.sum, 2)} / {st.n} = <strong>{round(st.mean)}</strong>
++            </p>
++            <p>
++              n = {st.n} ({isEven ? "par" : "impar"}) →{" "}
++              {isEven
++                ? `se promedian los datos de las posiciones ${st.n / 2} y ${st.n / 2 + 1}: (${st.sorted[st.n / 2 - 1]} + ${st.sorted[st.n / 2]}) / 2`
++                : `es el dato de la posición ${(st.n + 1) / 2}`}{" "}
++              → Me = <strong>{round(st.median)}</strong>
++            </p>
++            <p>
++              Mo = <strong>{st.modes[0]}</strong> (el valor de mayor frecuencia)
++            </p>
++            <p>
++              R = {Math.max(...st.sorted)} − {Math.min(...st.sorted)} = <strong>{st.range}</strong>
++            </p>
++            <p>
++              σ² = {round(st.variance * st.n, 2)} / {st.n} = <strong>{round(st.variance)}</strong> · σ = √
++              {round(st.variance)} = <strong>{round(st.stdDev)}</strong>
++            </p>
++          </div>
++        )}
++      </div>
++
++      {/* ---------------- Ejercicio 2 ---------------- */}
++      <div className="eval-section">
++        <span className="eval-badge">Ejercicio 2 · datos agrupados (n = {exB.data.length} ≤ 150)</span>
++        <h3 className="ex-title">{exB.title}</h3>
++        <p className="ex-prompt">{exB.prompt}</p>
++
++        <DataBox label="Datos relevados" data={exB.data} />
++
++        <h4 className="eval-subtitle">a) Intervalos: regla de Sturges</h4>
++        <p className="eval-note">
++          Calculá a mano k = 1 + 3.322 · log₁₀(n) con n = {exB.data.length} (redondeá al entero más
++          cercano), el rango R = máx − mín, y la amplitud A = R / k (redondeá hacia arriba).
++        </p>
++        <div className="eval-fields">
++          {measure("Rango", "R = máx − mín", "b_R", exB.unit)}
++          {measure("Cantidad de intervalos", "k = 1 + 3.322 · log₁₀(n)", "b_k")}
++          {measure("Amplitud", "A = R / k", "b_A", exB.unit)}
++        </div>
++
++        <h4 className="eval-subtitle">b) Tabla de frecuencias</h4>
++        {!showTable ? (
++          <>
++            <p className="eval-note">
++              Cuando tengas k y A, armá la tabla. Se construye con los valores correctos, así un error
++              en el punto (a) no te arrastra al resto del ejercicio; el punto (a) se corrige al entregar.
++            </p>
++            <button className="btn btn--primary" onClick={() => setTableOpen(true)}>
++              Armar la tabla de intervalos
++            </button>
++          </>
++        ) : (
++          <div className="table-wrap">
++            <table className="freq-table">
++              <thead>
++                <tr>
++                  <th>Intervalo</th>
++                  <th>Marca de clase (xᵢ)</th>
++                  <th>Frec. absoluta (fᵢ)</th>
++                  <th>Frec. acumulada (Fᵢ)</th>
++                </tr>
++              </thead>
++              <tbody>
++                {B.rows.map((r, i) => (
++                  <tr key={i}>
++                    <td className="fc fc--label">{r.label}</td>
++                    <Cell_ state={stateOf(`b_mark_${i}`)}>{field(`b_mark_${i}`, { width: 56 })}</Cell_>
++                    <Cell_ state={stateOf(`b_fi_${i}`)}>{field(`b_fi_${i}`, { width: 48 })}</Cell_>
++                    <Cell_ state={stateOf(`b_Fi_${i}`)}>{field(`b_Fi_${i}`, { width: 48 })}</Cell_>
++                  </tr>
++                ))}
++              </tbody>
++            </table>
++          </div>
++        )}
++
++        <h4 className="eval-subtitle">c) Medidas de posición</h4>
++        <div className="eval-fields">
++          {measure("Media", "x̄ = Σ xᵢ·fᵢ / n", "b_mean", exB.unit)}
++          {measure("Mediana", "Me = Lᵢ + ((n/2 − Fᵢ₋₁)/fᵢ)·A", "b_median", exB.unit)}
++          {measure("Moda", "Mo = Lᵢ + d₁/(d₁+d₂)·A", "b_mode", exB.unit)}
++          {measure("Cuartil 1", "Q₁ (posición n/4)", "b_q1", exB.unit)}
++          {measure("Cuartil 3", "Q₃ (posición 3n/4)", "b_q3", exB.unit)}
++        </div>
++
++        <h4 className="eval-subtitle">d) Medidas de dispersión</h4>
++        <div className="eval-fields">
++          {measure("Rango", "Ls del último − Li del primero", "b_range", exB.unit)}
++          {measure("Varianza", "σ² = Σ fᵢ(xᵢ − x̄)² / n", "b_var")}
++          {measure("Desvío estándar", "σ = √σ²", "b_sd", exB.unit)}
++          {measure("Coef. de variación", "CV = σ / x̄ · 100", "b_cv", "%")}
++        </div>
++      </div>
++
++      {/* ---------------- Entrega ---------------- */}
++      {!submitted ? (
++        <div className="ex-actions" style={{ marginTop: 24 }}>
++          <button className="btn btn--primary" onClick={() => setSubmitted(true)}>
++            <Send size={14} /> Entregar y corregir
++          </button>
++        </div>
++      ) : (
++        <>
++          <div className={`score-banner score-banner--${tone}`}>
++            <span>
++              Ejercicio 1: {scoreA} / {keysA.length} · Ejercicio 2: {scoreB} / {keysB.length}
++            </span>
++            <span className="score-banner__num">
++              {scoreA + scoreB} / {total} ({pct}%)
++            </span>
++          </div>
++          <p className="ex-feedback ex-feedback--info">
++            Las respuestas incorrectas muestran el valor correcto. Abajo tenés la resolución completa del
++            ejercicio 2.
++          </p>
++          <div className="ex-actions" style={{ marginTop: 10 }}>
++            <button className="btn btn--ghost" onClick={onRetry}>
++              <RotateCcw size={14} /> reintentar esta evaluación
++            </button>
++            <button className="btn btn--primary" onClick={onNew}>
++              <Shuffle size={14} /> nueva evaluación
++            </button>
++          </div>
++
++          <h4 className="charts-title" style={{ marginTop: 24 }}>Resolución del ejercicio 2</h4>
++          <GroupedWorkedSolution g={B} unit={exB.unit} />
++        </>
++      )}
++    </div>
++  );
++}
++
++/* ---------------------------------------------------------------- */
++/* Contenedor: número de evaluación e intento                          */
++/* ---------------------------------------------------------------- */
++
++export default function Evaluation() {
++  const [evalNo, setEvalNo] = useState(1);
++  const [attempt, setAttempt] = useState(0);
++  return (
++    <EvaluationSheet
++      key={`${evalNo}-${attempt}`}
++      evalNo={evalNo}
++      onNew={() => {
++        setEvalNo((n) => n + 1);
++        setAttempt(0);
++      }}
++      onRetry={() => setAttempt((a) => a + 1)}
++    />
++  );
++}
+diff --git a/src/GroupedMeasures.jsx b/src/GroupedMeasures.jsx
+new file mode 100644
+index 0000000..e127d3a
+--- /dev/null
++++ b/src/GroupedMeasures.jsx
+@@ -0,0 +1,443 @@
++import { useMemo, useState } from "react";
++import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
++import { RotateCcw, Eye, EyeOff } from "lucide-react";
++import { AnswerInput, MeasureCard, DataBox } from "./ui.jsx";
++import { analyzeGrouped, groupedPercentile, parseNum, tolFor, round } from "./stats.js";
++
++const PCT_OPTIONS = [10, 20, 30, 40, 60, 70, 80, 90, 95];
++
++/* ---------------------------------------------------------------- */
++/* Desarrollo "a mano" de la regla de Sturges                          */
++/* ---------------------------------------------------------------- */
++
++export function SturgesDevelopment({ s }) {
++  const limits = Array.from({ length: s.k + 1 }, (_, i) => s.min + i * s.amplitude);
++  return (
++    <div className="hand-calc">
++      <p className="hc-title">1) Cantidad de intervalos — regla de Sturges</p>
++      <p className="hc-formula">k = 1 + 3.322 · log₁₀(n)</p>
++      <p>
++        k = 1 + 3.322 · log₁₀({s.n}) = 1 + 3.322 · {round(s.log, 4)} = 1 + {round(3.322 * s.log, 4)} ={" "}
++        {round(s.kRaw, 3)}
++      </p>
++      <p>
++        Se redondea al entero más cercano → <strong>k = {s.k} intervalos</strong>
++      </p>
++
++      <p className="hc-title">2) Amplitud de cada intervalo</p>
++      <p>
++        Rango: R = máx − mín = {s.max} − {s.min} = <strong>{s.range}</strong>
++      </p>
++      <p className="hc-formula">A = R / k</p>
++      <p>
++        A = {s.range} / {s.k} = {round(s.ampRaw, 2)}
++        {Number.isInteger(s.ampRaw) ? " (ya es entero)" : " → se redondea hacia arriba"} →{" "}
++        <strong>A = {s.amplitude}</strong>
++      </p>
++      <p className="hc-note">
++        Se redondea hacia arriba para que los {s.k} intervalos alcancen a cubrir el dato máximo: k · A ={" "}
++        {s.k} · {s.amplitude} = {s.k * s.amplitude} ≥ {s.range}.
++      </p>
++
++      <p className="hc-title">3) Límites de los intervalos</p>
++      <p>
++        Se arranca en el mínimo ({s.min}) y se suma A = {s.amplitude} en cada paso: {limits.join(" → ")}
++      </p>
++      <p className="hc-note">
++        Los intervalos son cerrados a la izquierda y abiertos a la derecha [ ), salvo el último, que es
++        cerrado [ ] para incluir al máximo.
++      </p>
++    </div>
++  );
++}
++
++/* ---------------------------------------------------------------- */
++/* Tabla e histograma                                                  */
++/* ---------------------------------------------------------------- */
++
++function GroupedTable({ g }) {
++  return (
++    <div className="table-wrap">
++      <table className="freq-table">
++        <thead>
++          <tr>
++            <th>Intervalo</th>
++            <th>Marca xᵢ</th>
++            <th>fᵢ</th>
++            <th>Fᵢ</th>
++            <th>xᵢ · fᵢ</th>
++            <th>fᵢ · (xᵢ − x̄)²</th>
++          </tr>
++        </thead>
++        <tbody>
++          {g.rows.map((r, i) => (
++            <tr key={i}>
++              <td className="fc fc--label">{r.label}</td>
++              <td className="fc fc--num">{r.mark}</td>
++              <td className="fc fc--num">{r.fi}</td>
++              <td className="fc fc--num">{r.Fi}</td>
++              <td className="fc fc--num">{round(r.fx, 2)}</td>
++              <td className="fc fc--num">{round(r.dev2, 2)}</td>
++            </tr>
++          ))}
++          <tr>
++            <td className="fc fc--total">Total</td>
++            <td className="fc fc--total"></td>
++            <td className="fc fc--total">{g.n}</td>
++            <td className="fc fc--total"></td>
++            <td className="fc fc--total">{round(g.sumFx, 2)}</td>
++            <td className="fc fc--total">{round(g.sumDev2, 2)}</td>
++          </tr>
++        </tbody>
++      </table>
++    </div>
++  );
++}
++
++function Histogram({ g }) {
++  const data = g.rows.map((r) => ({ label: r.label, fi: r.fi }));
++  return (
++    <div className="hist-box">
++      <ResponsiveContainer width="100%" height={220}>
++        <BarChart data={data} barCategoryGap={0} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
++          <CartesianGrid strokeDasharray="3 3" stroke="#DDD6C4" />
++          <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#5A5142" }} />
++          <YAxis tick={{ fontSize: 11, fill: "#5A5142" }} allowDecimals={false} />
++          <Tooltip />
++          <Bar dataKey="fi" name="Frecuencia" fill="#5FA8A0" stroke="#1F3A34" />
++        </BarChart>
++      </ResponsiveContainer>
++    </div>
++  );
++}
++
++/* ---------------------------------------------------------------- */
++/* Desarrollo de cada medida                                           */
++/* ---------------------------------------------------------------- */
++
++function PercentileBody({ res, g, name }) {
++  const r = res.row;
++  const pos = round(res.pos, 2);
++  return (
++    <>
++      <p>
++        Posición: {res.p}% de n = {res.p}/100 · {g.n} = <strong>{pos}</strong>
++      </p>
++      <p>
++        Clase: la primera con Fᵢ ≥ {pos} → <strong>{r.label}</strong> (Lᵢ = {r.lo}, Fᵢ₋₁ = {r.Fprev}, fᵢ ={" "}
++        {r.fi}, A = {g.A})
++      </p>
++      <p>
++        {name} = {r.lo} + (({pos} − {r.Fprev}) / {r.fi}) · {g.A} = <strong>{round(res.value)}</strong>
++      </p>
++    </>
++  );
++}
++
++const PCT_FORMULA = (name) => `${name} = Lᵢ + ((p·n/100 − Fᵢ₋₁) / fᵢ) · A`;
++
++/** Desarrollo completo: Sturges, tabla, histograma y todas las medidas. */
++export function GroupedWorkedSolution({ g, unit, showSturges = true }) {
++  const [open, setOpen] = useState({});
++  const toggle = (k) => setOpen((o) => ({ ...o, [k]: !o[k] }));
++  const [pct, setPct] = useState(90);
++  const pRes = useMemo(() => groupedPercentile(g, pct), [g, pct]);
++  const m = g.mode;
++  const first = g.rows[0];
++  const last = g.rows[g.rows.length - 1];
++
++  return (
++    <div>
++      {showSturges && <SturgesDevelopment s={g.s} />}
++
++      <h4 className="charts-title">Tabla de frecuencias</h4>
++      <GroupedTable g={g} />
++      <Histogram g={g} />
++
++      <h4 className="charts-title" style={{ marginTop: 24 }}>Medidas de posición</h4>
++      <div className="measures-grid">
++        <MeasureCard
++          label="Media (x̄)"
++          value={round(g.mean)}
++          unit={unit}
++          formula="x̄ = Σ(xᵢ · fᵢ) / n"
++          open={!!open.mean}
++          onToggle={() => toggle("mean")}
++        >
++          <p>
++            x̄ = {round(g.sumFx, 2)} / {g.n} = <strong>{round(g.mean)}</strong>
++          </p>
++          <p className="hc-note">Cada dato se reemplaza por la marca de clase de su intervalo.</p>
++        </MeasureCard>
++
++        <MeasureCard
++          label="Mediana (Me)"
++          value={round(g.median.value)}
++          unit={unit}
++          formula="Me = Lᵢ + ((n/2 − Fᵢ₋₁) / fᵢ) · A"
++          open={!!open.median}
++          onToggle={() => toggle("median")}
++        >
++          <PercentileBody res={g.median} g={g} name="Me" />
++        </MeasureCard>
++
++        <MeasureCard
++          label="Moda (Mo)"
++          value={round(m.value)}
++          unit={unit}
++          formula="Mo = Lᵢ + d₁ / (d₁ + d₂) · A"
++          open={!!open.mode}
++          onToggle={() => toggle("mode")}
++        >
++          <p>
++            Clase modal (mayor fᵢ): <strong>{m.row.label}</strong>, con fᵢ = {m.row.fi}
++          </p>
++          <p>
++            d₁ = fᵢ − fᵢ₋₁ = {m.row.fi} − {m.prev} = {m.d1}
++            {m.idx === 0 && " (es la primera clase: fᵢ₋₁ = 0)"}
++          </p>
++          <p>
++            d₂ = fᵢ − fᵢ₊₁ = {m.row.fi} − {m.next} = {m.d2}
++            {m.idx === g.rows.length - 1 && " (es la última clase: fᵢ₊₁ = 0)"}
++          </p>
++          <p>
++            Mo = {m.row.lo} + {m.d1} / ({m.d1} + {m.d2}) · {g.A} = <strong>{round(m.value)}</strong>
++          </p>
++        </MeasureCard>
++
++        <MeasureCard
++          label="Cuartil 1 (Q₁)"
++          value={round(g.q1.value)}
++          unit={unit}
++          formula="Q₁ = Lᵢ + ((n/4 − Fᵢ₋₁) / fᵢ) · A"
++          open={!!open.q1}
++          onToggle={() => toggle("q1")}
++        >
++          <PercentileBody res={g.q1} g={g} name="Q₁" />
++        </MeasureCard>
++
++        <MeasureCard
++          label="Cuartil 3 (Q₃)"
++          value={round(g.q3.value)}
++          unit={unit}
++          formula="Q₃ = Lᵢ + ((3n/4 − Fᵢ₋₁) / fᵢ) · A"
++          open={!!open.q3}
++          onToggle={() => toggle("q3")}
++        >
++          <PercentileBody res={g.q3} g={g} name="Q₃" />
++        </MeasureCard>
++
++        <MeasureCard
++          label={`Percentil ${pct} (P${pct})`}
++          value={round(pRes.value)}
++          unit={unit}
++          formula={PCT_FORMULA(`P${pct}`)}
++          open={!!open.pct}
++          onToggle={() => toggle("pct")}
++        >
++          <p>
++            Elegí el percentil:{" "}
++            <select
++              className="pct-select"
++              value={pct}
++              onChange={(e) => setPct(Number(e.target.value))}
++            >
++              {PCT_OPTIONS.map((p) => (
++                <option key={p} value={p}>P{p}</option>
++              ))}
++            </select>
++          </p>
++          <PercentileBody res={pRes} g={g} name={`P${pct}`} />
++        </MeasureCard>
++      </div>
++
++      <h4 className="charts-title" style={{ marginTop: 24 }}>Medidas de dispersión</h4>
++      <div className="measures-grid">
++        <MeasureCard
++          label="Rango"
++          value={g.range}
++          unit={unit}
++          formula="Rango = límite superior del último − límite inferior del primero"
++          open={!!open.range}
++          onToggle={() => toggle("range")}
++        >
++          <p>
++            Rango = {last.hi} − {first.lo} = <strong>{g.range}</strong>
++          </p>
++          <p className="hc-note">En datos agrupados el rango se mide sobre los límites de la tabla.</p>
++        </MeasureCard>
++
++        <MeasureCard
++          label="Rango intercuartil"
++          value={round(g.iqr)}
++          unit={unit}
++          formula="RIC = Q₃ − Q₁"
++          open={!!open.iqr}
++          onToggle={() => toggle("iqr")}
++        >
++          <p>
++            RIC = {round(g.q3.value)} − {round(g.q1.value)} = <strong>{round(g.iqr)}</strong>
++          </p>
++          <p className="hc-note">Es el ancho del 50% central de los datos.</p>
++        </MeasureCard>
++
++        <MeasureCard
++          label="Varianza (σ²)"
++          value={round(g.variance)}
++          unit=""
++          formula="σ² = Σ fᵢ · (xᵢ − x̄)² / n"
++          open={!!open.variance}
++          onToggle={() => toggle("variance")}
++        >
++          <p>
++            σ² = {round(g.sumDev2, 2)} / {g.n} = <strong>{round(g.variance)}</strong>
++          </p>
++          <p className="hc-note">
++            El numerador es el total de la última columna de la tabla, con x̄ = {round(g.mean)}.
++          </p>
++        </MeasureCard>
++
++        <MeasureCard
++          label="Desvío estándar (σ)"
++          value={round(g.sd)}
++          unit={unit}
++          formula="σ = √σ²"
++          open={!!open.sd}
++          onToggle={() => toggle("sd")}
++        >
++          <p>
++            σ = √{round(g.variance)} = <strong>{round(g.sd)}</strong> {unit}
++          </p>
++        </MeasureCard>
++
++        <MeasureCard
++          label="Coef. de variación (CV)"
++          value={`${round(g.cv, 1)} %`}
++          unit=""
++          formula="CV = σ / x̄ · 100"
++          open={!!open.cv}
++          onToggle={() => toggle("cv")}
++        >
++          <p>
++            CV = {round(g.sd)} / {round(g.mean)} · 100 = <strong>{round(g.cv, 1)} %</strong>
++          </p>
++          <p className="hc-note">Mide la dispersión relativa al promedio: sirve para comparar variables con distintas unidades.</p>
++        </MeasureCard>
++      </div>
++    </div>
++  );
++}
++
++/* ---------------------------------------------------------------- */
++/* Módulo (solapa 3, modo "datos agrupados")                          */
++/* ---------------------------------------------------------------- */
++
++export default function GroupedMeasures({ set, onCycle }) {
++  const g = useMemo(() => analyzeGrouped(set.data), [set]);
++
++  const [kGuess, setKGuess] = useState("");
++  const [aGuess, setAGuess] = useState("");
++  const [checked, setChecked] = useState(false);
++  const [showDev, setShowDev] = useState(false);
++  const [meanGuess, setMeanGuess] = useState("");
++  const [meanChecked, setMeanChecked] = useState(false);
++
++  const kOk = parseNum(kGuess) === g.k;
++  const aOk = parseNum(aGuess) === g.A;
++  const sturgesOk = checked && kOk && aOk;
++  const tableVisible = sturgesOk || showDev;
++  const meanOk = Math.abs(parseNum(meanGuess) - g.mean) <= tolFor(g.mean);
++
++  return (
++    <div>
++      <div className="ex-header">
++        <div>
++          <h3 className="ex-title">{set.title}</h3>
++          <p className="ex-prompt">{set.prompt}</p>
++        </div>
++        <button className="btn btn--ghost" onClick={onCycle}>
++          <RotateCcw size={14} /> otro conjunto
++        </button>
++      </div>
++
++      <DataBox label="Datos relevados" data={set.data} />
++
++      <h4 className="charts-title">Paso 1 · ¿Cuántos intervalos?</h4>
++      <div className="sturges-practice">
++        <p>
++          Los datos no vienen agrupados, así que hay que armar los intervalos. Con la regla de Sturges,
++          k = 1 + 3.322 · log₁₀(n), donde n = {g.n}. Después, la amplitud es A = R / k (redondeá hacia
++          arriba). Dato útil: el mínimo es {g.s.min} y el máximo es {g.s.max}.
++        </p>
++        <div className="sturges-practice__grid">
++          <label className="sturges-practice__field">
++            k =
++            <AnswerInput
++              value={kGuess}
++              onChange={(v) => { setKGuess(v); setChecked(false); }}
++              state={checked ? (kOk ? "ok" : "bad") : undefined}
++              width={56}
++            />
++          </label>
++          <label className="sturges-practice__field">
++            A =
++            <AnswerInput
++              value={aGuess}
++              onChange={(v) => { setAGuess(v); setChecked(false); }}
++              state={checked ? (aOk ? "ok" : "bad") : undefined}
++              width={56}
++            />
++          </label>
++        </div>
++        <div className="ex-actions" style={{ marginTop: 10 }}>
++          <button className="btn btn--primary" onClick={() => setChecked(true)}>Verificar</button>
++          <button className="btn btn--ghost" onClick={() => setShowDev((v) => !v)}>
++            {showDev ? <EyeOff size={14} /> : <Eye size={14} />} {showDev ? "ocultar desarrollo" : "ver desarrollo"}
++          </button>
++        </div>
++        {checked && (
++          <p className={`ex-feedback ${sturgesOk ? "ex-feedback--ok" : "ex-feedback--bad"}`}>
++            {sturgesOk
++              ? "¡Correcto! Ya podés armar la tabla."
++              : `${kOk ? "k está bien" : "Revisá k"}${aOk ? ", A está bien" : ", revisá A"}. Si te trabás, mirá el desarrollo.`}
++          </p>
++        )}
++      </div>
++
++      {showDev && <SturgesDevelopment s={g.s} />}
++
++      {tableVisible ? (
++        <>
++          <div className="mean-practice" style={{ marginTop: 14 }}>
++            <p>
++              Antes de ver los resultados: con la tabla de abajo, calculá vos la <strong>media</strong>{" "}
++              (usá las marcas de clase).
++            </p>
++            <div className="mean-practice__row">
++              <AnswerInput
++                value={meanGuess}
++                onChange={(v) => { setMeanGuess(v); setMeanChecked(false); }}
++                width={80}
++                state={meanChecked ? (meanOk ? "ok" : "bad") : undefined}
++              />
++              <button className="btn btn--primary" onClick={() => setMeanChecked(true)}>Verificar</button>
++            </div>
++            {meanChecked && (
++              <p className={meanOk ? "ex-feedback ex-feedback--ok" : "ex-feedback ex-feedback--bad"}>
++                {meanOk
++                  ? "¡Correcto!"
++                  : `Todavía no — la media real es ${round(g.mean)}. Abrí la tarjeta de la media para ver el desarrollo.`}
++              </p>
++            )}
++          </div>
++
++          <GroupedWorkedSolution g={g} unit={set.unit} showSturges={false} />
++        </>
++      ) : (
++        <p className="eval-note" style={{ marginTop: 14 }}>
++          Resolvé el paso 1 (o tocá «ver desarrollo») para armar la tabla y ver las medidas.
++        </p>
++      )}
++    </div>
++  );
++}
+diff --git a/src/extras.css b/src/extras.css
+new file mode 100644
+index 0000000..244137f
+--- /dev/null
++++ b/src/extras.css
+@@ -0,0 +1,127 @@
++/* Estilos de los módulos nuevos (datos agrupados y modo evaluación).
++   Usan la misma paleta que el bloque <style> de App.jsx. */
++
++/* Selector "Datos sueltos | Datos agrupados" dentro de la solapa 3 */
++.seg {
++  display: inline-flex;
++  border: 1.5px solid #D8CFB8;
++  border-radius: 999px;
++  overflow: hidden;
++  margin-bottom: 16px;
++}
++.seg__btn {
++  font-family: 'Inter', sans-serif;
++  font-size: 12.5px;
++  font-weight: 600;
++  color: #5A5142;
++  background: transparent;
++  border: none;
++  padding: 7px 16px;
++  cursor: pointer;
++}
++.seg__btn:hover { color: #1F3A34; }
++.seg__btn--active { background: #1F3A34; color: #FAF7F0; }
++
++/* Respuesta correcta que aparece junto a un campo mal resuelto */
++.ans-hint { font-size: 11.5px; font-weight: 600; color: #B14E4E; margin-left: 2px; white-space: nowrap; }
++.ans-input:disabled { opacity: 0.85; cursor: not-allowed; }
++
++/* Datos crudos con scroll (hasta 150 datos) */
++.raw-data__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
++.raw-data__chips--scroll { max-height: 150px; overflow-y: auto; padding-right: 4px; }
++
++/* Desarrollo "a mano" (regla de Sturges, interpolaciones) */
++.hand-calc {
++  background: #FFFDF6;
++  border: 1.5px dashed #C9BC94;
++  border-radius: 10px;
++  padding: 12px 16px;
++  margin: 10px 0 14px;
++  font-size: 13.5px;
++  color: #3E3A2E;
++}
++.hand-calc p { margin: 6px 0; line-height: 1.55; }
++.hand-calc .hc-title { font-weight: 700; color: #1F3A34; margin-top: 10px; }
++.hand-calc .hc-title:first-child { margin-top: 0; }
++.hand-calc .hc-formula { font-family: 'Fraunces', serif; font-style: italic; color: #5A5142; }
++.hand-calc .hc-note { font-size: 12.5px; color: #7A6A3E; }
++
++/* Práctica de Sturges */
++.sturges-practice {
++  background: #EFE9D8;
++  border: 1px dashed #C9BC94;
++  border-radius: 10px;
++  padding: 14px 16px;
++  margin-bottom: 8px;
++  font-size: 13.5px;
++}
++.sturges-practice__grid { display: flex; flex-wrap: wrap; gap: 18px; margin: 10px 0 4px; }
++.sturges-practice__field { display: flex; align-items: center; gap: 8px; font-weight: 600; color: #4A4433; }
++
++/* Tablas agrupadas con totales */
++.fc--num { font-variant-numeric: tabular-nums; }
++.fc--total { font-weight: 700; color: #1F3A34; border-top: 2px solid #1F3A34; border-bottom: none; }
++.hist-box { background: #fff; border: 1px solid #E4DCC5; border-radius: 10px; padding: 8px; margin-top: 8px; }
++.pct-select {
++  font-family: 'Inter', sans-serif;
++  font-size: 12.5px;
++  border: 1.5px solid #D8CFB8;
++  border-radius: 6px;
++  padding: 3px 6px;
++  background: #fff;
++  color: #1F3A34;
++}
++
++/* Modo evaluación */
++.eval-banner {
++  background: #1F3A34;
++  color: #FAF7F0;
++  border-radius: 10px;
++  padding: 14px 16px;
++  margin-bottom: 18px;
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  gap: 12px;
++  flex-wrap: wrap;
++}
++.eval-banner h3 { font-family: 'Fraunces', serif; font-size: 20px; margin: 0 0 2px; }
++.eval-banner p { margin: 0; font-size: 12.5px; color: #B9CFC7; max-width: 520px; }
++.eval-banner .btn--ghost { color: #CFE3DC; border-color: #3F5B54; }
++.eval-banner .btn--ghost:hover { color: #FBF8F1; border-color: #E8B33D; }
++.eval-section { border-top: 2px solid #1F3A34; padding-top: 16px; margin-top: 26px; }
++.eval-section:first-of-type { margin-top: 0; }
++.eval-badge {
++  display: inline-block;
++  background: #E8B33D;
++  color: #24312C;
++  font-size: 11.5px;
++  font-weight: 700;
++  border-radius: 999px;
++  padding: 3px 10px;
++  margin-bottom: 8px;
++}
++.eval-subtitle { font-family: 'Fraunces', serif; font-size: 15px; font-weight: 700; color: #1F3A34; margin: 18px 0 8px; }
++.eval-fields { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 14px; }
++@media (max-width: 700px) { .eval-fields { grid-template-columns: 1fr 1fr; } }
++@media (max-width: 460px) { .eval-fields { grid-template-columns: 1fr; } }
++.eval-field { display: flex; flex-direction: column; gap: 4px; background: #fff; border: 1px solid #E4DCC5; border-radius: 8px; padding: 8px 10px; }
++.eval-field__label { font-size: 12px; font-weight: 700; color: #5A5142; }
++.eval-field__formula { font-family: 'Fraunces', serif; font-style: italic; font-size: 12px; color: #8A8065; }
++.eval-note { font-size: 12.5px; color: #7A6A3E; margin: 6px 0 10px; }
++.score-banner {
++  border-radius: 10px;
++  padding: 14px 16px;
++  margin: 18px 0 6px;
++  font-weight: 600;
++  font-size: 14px;
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  gap: 10px;
++  flex-wrap: wrap;
++}
++.score-banner--good { background: rgba(95,168,160,0.16); color: #2E6A60; }
++.score-banner--mid { background: rgba(232,179,61,0.2); color: #7A5A12; }
++.score-banner--low { background: rgba(217,108,108,0.14); color: #A23F3F; }
++.score-banner__num { font-family: 'Fraunces', serif; font-size: 24px; font-weight: 700; }
+diff --git a/src/groupedExamples.js b/src/groupedExamples.js
+new file mode 100644
+index 0000000..cdc65b0
+--- /dev/null
++++ b/src/groupedExamples.js
+@@ -0,0 +1,28 @@
++/* Ejemplos fijos para "Posición y dispersión · datos agrupados".
++   Los intervalos NO vienen dados: se calculan con la regla de Sturges. */
++export const GROUPED_MEASURE_SETS = [
++  {
++    title: "Estaturas del curso",
++    prompt: "Estaturas (en cm) de los 40 estudiantes de un curso.",
++    unit: "cm",
++    data: [164, 167, 161, 154, 166, 165, 172, 164, 160, 157, 152, 167, 183, 169, 169, 159, 169, 157, 169, 176, 174, 162, 161, 158, 176, 161, 163, 148, 166, 168, 163, 178, 168, 162, 153, 159, 165, 173, 169, 154],
++  },
++  {
++    title: "Minutos de estudio por día",
++    prompt: "Minutos que estudia por día cada uno de 36 estudiantes de 5° año.",
++    unit: "minutos",
++    data: [142, 80, 15, 134, 157, 83, 78, 91, 68, 89, 114, 72, 105, 102, 105, 82, 49, 125, 40, 122, 73, 99, 37, 62, 36, 131, 103, 137, 111, 136, 88, 134, 49, 118, 123, 83],
++  },
++  {
++    title: "Peso de los estudiantes",
++    prompt: "Peso (en kg) de 60 estudiantes que participaron de un control de salud escolar.",
++    unit: "kg",
++    data: [68, 53, 60, 67, 80, 70, 60, 64, 53, 58, 59, 63, 73, 50, 63, 59, 63, 65, 62, 56, 53, 60, 63, 63, 57, 55, 77, 63, 53, 67, 69, 65, 57, 59, 58, 55, 66, 54, 64, 62, 64, 62, 62, 73, 55, 53, 67, 62, 53, 62, 74, 77, 73, 67, 65, 66, 60, 59, 61, 58],
++  },
++  {
++    title: "Precio de una gaseosa de 500 ml",
++    prompt: "Precio (en pesos) de una gaseosa de 500 ml en 50 comercios de un barrio.",
++    unit: "pesos",
++    data: [2010, 2100, 1620, 1630, 1130, 1780, 1790, 1790, 1890, 1110, 1670, 1630, 1540, 1710, 1690, 1960, 2140, 1560, 2020, 2100, 1710, 1620, 2050, 1930, 1830, 2020, 2020, 1920, 1370, 1410, 1920, 1770, 2040, 2040, 1800, 1900, 1510, 1920, 1740, 1760, 2250, 1530, 1960, 1630, 1780, 1820, 1720, 1660, 1890, 1230],
++  },
++];
+diff --git a/src/stats.js b/src/stats.js
+new file mode 100644
+index 0000000..f85d64f
+--- /dev/null
++++ b/src/stats.js
+@@ -0,0 +1,340 @@
++/* ---------------------------------------------------------------- */
++/* Cálculos de estadística                                            */
++/* ---------------------------------------------------------------- */
++
++export function round(x, d = 2) {
++  const f = 10 ** d;
++  return Math.round(x * f) / f;
++}
++
++/** Lee lo que escribió el estudiante ("12,5", "45 %", "") → número o NaN. */
++export function parseNum(raw) {
++  const s = String(raw ?? "").replace("%", "").replace(",", ".").trim();
++  return s === "" ? NaN : Number(s);
++}
++
++/** Margen de error aceptado por redondeos hechos a mano: 0.3% del valor, mínimo 0.05. */
++export function tolFor(v) {
++  return Math.max(0.05, Math.abs(v) * 0.003);
++}
++
++/* ---------- Datos sueltos (código original, sin cambios) ---------- */
++
++export function ungroupedRows(data) {
++  const n = data.length;
++  const values = [...new Set(data)].sort((a, b) => a - b);
++  let cum = 0;
++  return values.map((v) => {
++    const fi = data.filter((x) => x === v).length;
++    cum += fi;
++    return { label: String(v), fi, fr: Math.round((fi / n) * 1000) / 10, fa: cum };
++  });
++}
++
++export function getIntervals(data, width) {
++  const min = Math.min(...data);
++  const max = Math.max(...data);
++  let start = Math.floor(min / width) * width;
++  let end = Math.ceil(max / width) * width;
++  if (end === max) end += width;
++  const intervals = [];
++  for (let l = start; l < end; l += width) intervals.push([l, l + width]);
++  return intervals;
++}
++
++export function groupedRows(data, width) {
++  const n = data.length;
++  const intervals = getIntervals(data, width);
++  let cum = 0;
++  return intervals.map(([l, r], idx) => {
++    const isLast = idx === intervals.length - 1;
++    const fi = data.filter((x) => (isLast ? x >= l && x <= r : x >= l && x < r)).length;
++    cum += fi;
++    return {
++      label: `[${l} - ${r}${isLast ? "]" : ")"}`,
++      mark: (l + r) / 2,
++      fi,
++      fr: Math.round((fi / n) * 1000) / 10,
++      fa: cum,
++    };
++  });
++}
++
++export function computeStats(data) {
++  const n = data.length;
++  const sorted = [...data].sort((a, b) => a - b);
++  const sum = data.reduce((a, b) => a + b, 0);
++  const mean = sum / n;
++  const mid = Math.floor(n / 2);
++  const median = n % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
++  const freqMap = {};
++  data.forEach((x) => (freqMap[x] = (freqMap[x] || 0) + 1));
++  const maxFreq = Math.max(...Object.values(freqMap));
++  const modes = Object.keys(freqMap)
++    .filter((k) => freqMap[k] === maxFreq)
++    .map(Number)
++    .sort((a, b) => a - b);
++  const range = Math.max(...data) - Math.min(...data);
++  const variance = data.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
++  const stdDev = Math.sqrt(variance);
++  return { n, sorted, sum, mean, median, modes, range, variance, stdDev };
++}
++
++/* ---------- Datos agrupados ---------- */
++
++/**
++ * Regla de Sturges + amplitud.
++ *   k = 1 + 3.322 · log10(n)   → se redondea al entero más cercano
++ *   A = R / k                  → se redondea HACIA ARRIBA (datos enteros)
++ * Redondear A hacia arriba garantiza k·A ≥ R, o sea que los k intervalos
++ * cubren todos los datos.
++ */
++export function sturges(data) {
++  const n = data.length;
++  const min = Math.min(...data);
++  const max = Math.max(...data);
++  const range = max - min;
++  const log = Math.log10(n);
++  const kRaw = 1 + 3.322 * log;
++  const k = Math.round(kRaw);
++  const ampRaw = range / k;
++  const amplitude = Math.ceil(ampRaw);
++  return { n, min, max, range, log, kRaw, k, ampRaw, amplitude };
++}
++
++/**
++ * Arma la tabla agrupada con k intervalos de amplitud A que arrancan en el
++ * mínimo. Intervalos [Li, Ls) y el último cerrado [Li, Ls] (igual que el
++ * resto de la app).
++ */
++export function buildGroupedTable(data, k, A) {
++  const n = data.length;
++  const start = Math.min(...data);
++  let cum = 0;
++  const rows = [];
++  for (let i = 0; i < k; i++) {
++    const lo = start + i * A;
++    const hi = lo + A;
++    const isLast = i === k - 1;
++    const fi = data.filter((x) => x >= lo && (isLast ? x <= hi : x < hi)).length;
++    const Fprev = cum;
++    cum += fi;
++    rows.push({
++      lo,
++      hi,
++      label: `[${lo} - ${hi}${isLast ? "]" : ")"}`,
++      mark: (lo + hi) / 2,
++      fi,
++      Fprev,
++      Fi: cum,
++      fr: round((fi / n) * 100, 1),
++    });
++  }
++  return rows;
++}
++
++/**
++ * Percentil por interpolación dentro de la clase:
++ *   pos = p·n/100
++ *   clase = primera con Fi ≥ pos
++ *   P = Li + ((pos − F(i−1)) / fi) · A
++ * (Q1 = P25, Mediana = P50, Q3 = P75)
++ */
++export function groupedPercentile(g, p) {
++  const pos = (p * g.n) / 100;
++  const idx = g.rows.findIndex((r) => r.Fi >= pos);
++  const row = g.rows[idx];
++  const value = row.lo + ((pos - row.Fprev) / row.fi) * g.A;
++  return { p, pos, idx, row, value };
++}
++
++/**
++ * Moda por interpolación:
++ *   Mo = Li + d1/(d1 + d2) · A
++ *   d1 = fi − f(i−1)   d2 = fi − f(i+1)
++ */
++export function groupedMode(rows, A) {
++  const maxF = Math.max(...rows.map((r) => r.fi));
++  const idx = rows.findIndex((r) => r.fi === maxF);
++  const row = rows[idx];
++  const prev = idx > 0 ? rows[idx - 1].fi : 0;
++  const next = idx < rows.length - 1 ? rows[idx + 1].fi : 0;
++  const d1 = row.fi - prev;
++  const d2 = row.fi - next;
++  const tied = rows.filter((r) => r.fi === maxF).length > 1;
++  const value = d1 + d2 === 0 ? row.mark : row.lo + (d1 / (d1 + d2)) * A;
++  return { idx, row, prev, next, d1, d2, tied, value };
++}
++
++/** Todo junto: Sturges → tabla → medidas de posición y dispersión. */
++export function analyzeGrouped(data) {
++  const s = sturges(data);
++  const { n, k, amplitude: A } = s;
++  const base = buildGroupedTable(data, k, A);
++  const sumFx = base.reduce((a, r) => a + r.fi * r.mark, 0);
++  const mean = sumFx / n;
++  const rows = base.map((r) => ({
++    ...r,
++    fx: r.fi * r.mark,
++    dev2: r.fi * (r.mark - mean) ** 2,
++  }));
++  const sumDev2 = rows.reduce((a, r) => a + r.dev2, 0);
++  const variance = sumDev2 / n; // varianza poblacional, igual que en datos sueltos
++  const sd = Math.sqrt(variance);
++  const g = { n, k, A, s, rows, sumFx, mean, sumDev2, variance, sd };
++  g.cv = (sd / mean) * 100;
++  g.range = rows[rows.length - 1].hi - rows[0].lo;
++  g.median = groupedPercentile(g, 50);
++  g.q1 = groupedPercentile(g, 25);
++  g.q3 = groupedPercentile(g, 75);
++  g.iqr = g.q3.value - g.q1.value;
++  g.mode = groupedMode(rows, A);
++  return g;
++}
++
++/* ---------------------------------------------------------------- */
++/* Generador de ejercicios para el modo evaluación                     */
++/* ---------------------------------------------------------------- */
++
++/** Generador pseudoaleatorio con semilla: misma evaluación N.º → mismos datos. */
++export function mulberry32(seed) {
++  let a = seed >>> 0;
++  return () => {
++    a = (a + 0x6d2b79f5) | 0;
++    let t = Math.imul(a ^ (a >>> 15), 1 | a);
++    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
++    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
++  };
++}
++
++function gauss(rng) {
++  let u = 0;
++  while (u === 0) u = rng();
++  const v = rng();
++  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
++}
++
++const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
++
++function weighted(rng, values, weights) {
++  const total = weights.reduce((a, b) => a + b, 0);
++  let r = rng() * total;
++  for (let i = 0; i < values.length; i++) {
++    r -= weights[i];
++    if (r < 0) return values[i];
++  }
++  return values[values.length - 1];
++}
++
++/** Datos sueltos (variable discreta), n entre 36 y 50. */
++const UNGROUPED_THEMES = [
++  {
++    title: "Hermanos y hermanas",
++    prompt: (n) => `Se relevó a ${n} estudiantes del colegio: ¿cuántos hermanos o hermanas tiene cada uno?`,
++    unit: "hermanos/as",
++    n: 40,
++    values: [0, 1, 2, 3, 4, 5],
++    weights: [10, 32, 28, 16, 9, 5],
++  },
++  {
++    title: "Goles por partido",
++    prompt: (n) => `Goles convertidos por el equipo del colegio en ${n} partidos del torneo intercolegial.`,
++    unit: "goles",
++    n: 36,
++    values: [0, 1, 2, 3, 4, 5],
++    weights: [14, 30, 25, 17, 9, 5],
++  },
++  {
++    title: "Libros leídos en el año",
++    prompt: (n) => `Cantidad de libros que leyeron durante el año ${n} estudiantes de 5° año.`,
++    unit: "libros",
++    n: 45,
++    values: [0, 1, 2, 3, 4, 5, 6],
++    weights: [8, 16, 24, 22, 16, 9, 5],
++  },
++  {
++    title: "Aciertos en un test",
++    prompt: (n) => `Respuestas correctas (de 8 preguntas) de ${n} estudiantes en un test de opción múltiple.`,
++    unit: "aciertos",
++    n: 50,
++    values: [2, 3, 4, 5, 6, 7, 8],
++    weights: [4, 9, 15, 22, 24, 16, 10],
++  },
++];
++
++/** Datos agrupados (variable continua medida en enteros), n ≤ 150. */
++const GROUPED_THEMES = [
++  {
++    title: "Estaturas de estudiantes",
++    prompt: (n) => `Estaturas (en cm) de ${n} estudiantes de un colegio.`,
++    unit: "cm",
++    n: 100,
++    gen: (rng) => clamp(Math.round(165 + 8 * gauss(rng)), 135, 200),
++  },
++  {
++    title: "Puntajes en un test de aptitud",
++    prompt: (n) => `Puntajes (sobre 100) obtenidos por ${n} aspirantes en un test de aptitud.`,
++    unit: "puntos",
++    n: 80,
++    gen: (rng) => clamp(Math.round(62 + 14 * gauss(rng)), 0, 100),
++  },
++  {
++    title: "Tiempo de traslado a la escuela",
++    prompt: (n) => `Minutos que tardan en llegar a la escuela ${n} estudiantes.`,
++    unit: "minutos",
++    n: 120,
++    gen: (rng) => clamp(Math.round(4 - 7 * Math.log(1 - rng()) - 7 * Math.log(1 - rng())), 3, 90),
++  },
++  {
++    title: "Edades de los socios de un club",
++    prompt: (n) => `Edades (en años) de ${n} socios de un club de barrio.`,
++    unit: "años",
++    n: 110,
++    gen: (rng) => clamp(Math.round(13 - 10 * Math.log(1 - rng()) - 8 * Math.log(1 - rng())), 12, 75),
++  },
++];
++
++const NEAR_HALF = 0.03; // evita n cuyo k de Sturges cae justo en x.5 (ambiguo a mano)
++
++function kIsClear(n) {
++  const kRaw = 1 + 3.322 * Math.log10(n);
++  return Math.abs(kRaw - Math.floor(kRaw) - 0.5) > NEAR_HALF;
++}
++
++/** Ejercicio 1: datos NO agrupados. Moda única y al menos 5 valores distintos. */
++export function makeUngroupedExercise(seed) {
++  const theme = UNGROUPED_THEMES[(seed - 1 + UNGROUPED_THEMES.length * 1000) % UNGROUPED_THEMES.length];
++  for (let attempt = 0; attempt < 500; attempt++) {
++    const rng = mulberry32(seed * 7919 + attempt);
++    const data = Array.from({ length: theme.n }, () => weighted(rng, theme.values, theme.weights));
++    const st = computeStats(data);
++    if (st.modes.length === 1 && new Set(data).size >= 5) {
++      return { title: theme.title, prompt: theme.prompt(theme.n), unit: theme.unit, data };
++    }
++  }
++  throw new Error("No se pudo generar el ejercicio de datos sueltos");
++}
++
++/**
++ * Ejercicio 2: datos AGRUPADOS (intervalos por Sturges), n ≤ 150.
++ * Condiciones para que el desarrollo sea limpio: sin intervalos vacíos,
++ * una única clase modal con d1 + d2 > 0, y k de Sturges sin ambigüedad.
++ */
++export function makeGroupedExercise(seed) {
++  const theme = GROUPED_THEMES[(seed * 3 + 1000) % GROUPED_THEMES.length];
++  if (theme.n > 150 || !kIsClear(theme.n)) throw new Error("Tema inválido: n ≤ 150 y k sin ambigüedad");
++  for (let attempt = 0; attempt < 500; attempt++) {
++    const rng = mulberry32(seed * 104729 + attempt);
++    const data = Array.from({ length: theme.n }, () => theme.gen(rng));
++    const g = analyzeGrouped(data);
++    const ok =
++      g.rows.every((r) => r.fi > 0) &&
++      !g.mode.tied &&
++      g.mode.d1 + g.mode.d2 > 0 &&
++      g.k * g.A - g.s.range < g.A; // el último intervalo no queda vacío
++    if (ok) return { title: theme.title, prompt: theme.prompt(theme.n), unit: theme.unit, data };
++  }
++  throw new Error("No se pudo generar el ejercicio de datos agrupados");
++}
++
++export { GROUPED_THEMES, UNGROUPED_THEMES };
+diff --git a/src/ui.jsx b/src/ui.jsx
+new file mode 100644
+index 0000000..5772422
+--- /dev/null
++++ b/src/ui.jsx
+@@ -0,0 +1,81 @@
++import { useMemo, useState } from "react";
++import { Check, X } from "lucide-react";
++
++/* Componentes compartidos por App, GroupedMeasures y Evaluation. */
++
++export function Cell_({ children, state }) {
++  return (
++    <td className={`fc ${state === "ok" ? "fc--ok" : state === "bad" ? "fc--bad" : ""}`}>
++      {children}
++    </td>
++  );
++}
++
++/**
++ * hint     (opcional): si la respuesta está mal, muestra "= valor correcto".
++ * disabled (opcional): bloquea el campo (se usa al entregar la evaluación).
++ */
++export function AnswerInput({ value, onChange, state, width = 64, suffix, hint, disabled = false }) {
++  return (
++    <span className="ans-wrap">
++      <input
++        type="text"
++        className={`ans-input ${state === "ok" ? "ans-input--ok" : state === "bad" ? "ans-input--bad" : ""}`}
++        style={{ width }}
++        value={value}
++        onChange={(e) => onChange(e.target.value)}
++        inputMode="decimal"
++        disabled={disabled}
++      />
++      {suffix && <span className="ans-suffix">{suffix}</span>}
++      {state === "ok" && <Check size={14} className="ans-icon ans-icon--ok" />}
++      {state === "bad" && <X size={14} className="ans-icon ans-icon--bad" />}
++      {state === "bad" && hint !== undefined && <span className="ans-hint">= {hint}</span>}
++    </span>
++  );
++}
++
++export function MeasureCard({ label, formula, value, unit, children, open, onToggle }) {
++  return (
++    <div className="measure-card">
++      <div className="measure-card__head" onClick={onToggle}>
++        <div>
++          <div className="measure-card__label">{label}</div>
++          <div className="measure-card__value">
++            {value} <span className="measure-card__unit">{unit}</span>
++          </div>
++        </div>
++        <span className="measure-card__toggle">{open ? "−" : "+"}</span>
++      </div>
++      {open && (
++        <div className="measure-card__body">
++          <div className="measure-card__formula">{formula}</div>
++          {children}
++        </div>
++      )}
++    </div>
++  );
++}
++
++/** Datos relevados, con scroll y botón para ordenarlos (útil con muchos datos). */
++export function DataBox({ label, data }) {
++  const [sorted, setSorted] = useState(false);
++  const shown = useMemo(() => (sorted ? [...data].sort((a, b) => a - b) : data), [sorted, data]);
++  return (
++    <div className="raw-data">
++      <div className="raw-data__toolbar">
++        <span className="raw-data__label">
++          {label} (n = {data.length}):
++        </span>
++        <button className="btn btn--ghost" onClick={() => setSorted((v) => !v)}>
++          {sorted ? "ver como se relevaron" : "ordenar de menor a mayor"}
++        </button>
++      </div>
++      <div className="raw-data__chips raw-data__chips--scroll">
++        {shown.map((v, i) => (
++          <span className="chip" key={i}>{v}</span>
++        ))}
++      </div>
++    </div>
++  );
++}
+-- 
+2.43.0
+
