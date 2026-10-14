@@ -2,9 +2,15 @@ import { useMemo, useState } from "react";
 import { RotateCcw, Shuffle, Send } from "lucide-react";
 import { AnswerInput, Cell_, DataBox } from "./ui.jsx";
 import { GroupedWorkedSolution } from "./GroupedMeasures.jsx";
+import { recordResult } from "./progress.js";
+import { Choice, Conclusion, GivenTable, InterpretationQuestion, SampleSolution } from "./CompareCV.jsx";
 import {
+  CV_HOMOGENEA,
   analyzeGrouped,
+  analyzeTable,
+  compareVerdict,
   computeStats,
+  makeCompareExercise,
   makeGroupedExercise,
   makeUngroupedExercise,
   parseNum,
@@ -20,7 +26,7 @@ import {
 const exact = (value) => ({ value, tol: 0.001, decimals: 0 });
 const approx = (value, decimals = 2) => ({ value, tol: tolFor(value), decimals });
 
-function buildExpected(A, B) {
+function buildExpected(A, B, C) {
   const e = {};
 
   // Ejercicio 1 · datos sueltos
@@ -54,6 +60,18 @@ function buildExpected(A, B) {
   e.b_var = approx(B.variance);
   e.b_sd = approx(B.sd);
   e.b_cv = { value: B.cv, tol: 0.1, decimals: 1 };
+
+  // Ejercicio 3 · comparar dos muestras con el CV (las opciones se corrigen por igualdad)
+  e.c_a_mean = approx(C.ga.mean);
+  e.c_a_sd = approx(C.ga.sd);
+  e.c_a_cv = { value: C.ga.cv, tol: 0.2, decimals: 1 };
+  e.c_b_mean = approx(C.gb.mean);
+  e.c_b_sd = approx(C.gb.sd);
+  e.c_b_cv = { value: C.gb.cv, tol: 0.2, decimals: 1 };
+  e.c_homA = { choice: C.v.homA ? "si" : "no" };
+  e.c_homB = { choice: C.v.homB ? "si" : "no" };
+  e.c_more = { choice: C.v.more };
+  e.c_interp = { choice: C.ex.interp.correct };
   return e;
 }
 
@@ -61,37 +79,64 @@ function buildExpected(A, B) {
 /* Hoja de evaluación                                                  */
 /* ---------------------------------------------------------------- */
 
+/** Corrige todas las respuestas: { clave: true/false }. */
+function gradeAnswers(expected, answers) {
+  const r = {};
+  for (const [key, spec] of Object.entries(expected)) {
+    if ("choice" in spec) {
+      r[key] = answers[key] === spec.choice;
+      continue;
+    }
+    const v = parseNum(answers[key]);
+    r[key] = Number.isFinite(v) && Math.abs(v - spec.value) <= spec.tol;
+  }
+  return r;
+}
+
 function EvaluationSheet({ evalNo, onNew, onRetry }) {
   const exA = useMemo(() => makeUngroupedExercise(evalNo), [evalNo]);
   const exB = useMemo(() => makeGroupedExercise(evalNo), [evalNo]);
   const A = useMemo(() => ({ rows: ungroupedRows(exA.data), st: computeStats(exA.data) }), [exA]);
   const B = useMemo(() => analyzeGrouped(exB.data), [exB]);
-  const expected = useMemo(() => buildExpected(A, B), [A, B]);
+  const exC = useMemo(() => makeCompareExercise(evalNo), [evalNo]);
+  const C = useMemo(() => {
+    const [ga, gb] = exC.samples.map((s) => analyzeTable(s.base));
+    return { ex: exC, ga, gb, v: compareVerdict(ga, gb) };
+  }, [exC]);
+  const expected = useMemo(() => buildExpected(A, B, C), [A, B, C]);
 
   const [answers, setAnswers] = useState({});
   const [submitted, setSubmitted] = useState(false);
   const [tableOpen, setTableOpen] = useState(false);
 
-  const results = useMemo(() => {
-    if (!submitted) return null;
-    const r = {};
-    for (const [key, spec] of Object.entries(expected)) {
-      const v = parseNum(answers[key]);
-      r[key] = Number.isFinite(v) && Math.abs(v - spec.value) <= spec.tol;
-    }
-    return r;
-  }, [submitted, answers, expected]);
+  const results = useMemo(() => (submitted ? gradeAnswers(expected, answers) : null), [submitted, answers, expected]);
 
   const keysA = Object.keys(expected).filter((k) => k.startsWith("a_"));
   const keysB = Object.keys(expected).filter((k) => k.startsWith("b_"));
+  const keysC = Object.keys(expected).filter((k) => k.startsWith("c_"));
   const scoreOf = (keys) => (results ? keys.filter((k) => results[k]).length : 0);
   const scoreA = scoreOf(keysA);
   const scoreB = scoreOf(keysB);
-  const total = keysA.length + keysB.length;
-  const pct = Math.round(((scoreA + scoreB) / total) * 100);
+  const scoreC = scoreOf(keysC);
+  const total = keysA.length + keysB.length + keysC.length;
+  const pct = Math.round(((scoreA + scoreB + scoreC) / total) * 100);
   const tone = pct >= 85 ? "good" : pct >= 60 ? "mid" : "low";
 
   const stateOf = (key) => (results ? (results[key] ? "ok" : "bad") : undefined);
+
+  const entregar = () => {
+    const r = gradeAnswers(expected, answers);
+    const part = (label, keys) => ({ label, score: keys.filter((k) => r[k]).length, total: keys.length });
+    const parts = [part("Ej. 1", keysA), part("Ej. 2", keysB), part("Ej. 3", keysC)];
+    recordResult({
+      kind: "evaluacion",
+      id: evalNo,
+      score: parts.reduce((s, p) => s + p.score, 0),
+      total,
+      parts,
+    });
+    setSubmitted(true);
+  };
 
   const field = (key, { width = 64, suffix } = {}) => (
     <AnswerInput
@@ -104,6 +149,11 @@ function EvaluationSheet({ evalNo, onNew, onRetry }) {
       disabled={submitted}
     />
   );
+
+  const setChoice = (key, v) => setAnswers((prev) => ({ ...prev, [key]: v }));
+  const choiceHint = (key, text) =>
+    results && !results[key] ? <span className="ans-hint">= {text}</span> : null;
+  const yesNo = (v) => (v === "si" ? "Sí" : "No");
 
   const measure = (label, formula, key, suffix) => (
     <div className="eval-field">
@@ -123,8 +173,9 @@ function EvaluationSheet({ evalNo, onNew, onRetry }) {
         <div>
           <h3>Modo evaluación · N.º {evalNo}</h3>
           <p>
-            Dos ejercicios completos: uno con datos sin agrupar y otro con datos agrupados. Resolvé en
-            papel, con calculadora, y cargá tus resultados. Se acepta un pequeño margen por redondeo.
+            Tres ejercicios: datos sin agrupar, datos agrupados y comparación de dos muestras con el
+            coeficiente de variación. Resolvé en papel, con calculadora, y cargá tus resultados. Se acepta un
+            pequeño margen por redondeo.
           </p>
         </div>
         <button className="btn btn--ghost" onClick={onNew}>
@@ -278,10 +329,82 @@ function EvaluationSheet({ evalNo, onNew, onRetry }) {
         </div>
       </div>
 
+      {/* ---------------- Ejercicio 3 ---------------- */}
+      <div className="eval-section">
+        <span className="eval-badge">Ejercicio 3 · comparar dos muestras (CV)</span>
+        <h3 className="ex-title">{exC.title}</h3>
+        <p className="ex-prompt">{exC.prompt}</p>
+        <p className="eval-note">
+          Las tablas ya están armadas. Para cada muestra calculá x̄, σ y CV (usá las marcas de clase). Se
+          considera homogénea a una muestra con CV &lt; {CV_HOMOGENEA} %.
+        </p>
+        <div className="cmp-grid">
+          {exC.samples.map((s, i) => {
+            const p = i === 0 ? "a" : "b";
+            const g = i === 0 ? C.ga : C.gb;
+            const hk = `c_hom${s.tag}`;
+            return (
+              <div className="cmp-card" key={s.tag}>
+                <div className="cmp-card__title">
+                  Muestra {s.tag} · {s.label}
+                </div>
+                <GivenTable base={s.base} n={g.n} />
+                <div className="cmp-fields">
+                  <label className="sturges-practice__field">
+                    x̄ = {field(`c_${p}_mean`, { width: 76, suffix: s.unit })}
+                  </label>
+                  <label className="sturges-practice__field">
+                    σ = {field(`c_${p}_sd`, { width: 76, suffix: s.unit })}
+                  </label>
+                  <label className="sturges-practice__field">
+                    CV = {field(`c_${p}_cv`, { width: 76, suffix: "%" })}
+                  </label>
+                </div>
+                <div className="cmp-question">
+                  ¿Es homogénea (CV &lt; {CV_HOMOGENEA} %)?
+                  <Choice
+                    name={`eval-${hk}`}
+                    value={answers[hk]}
+                    onChange={(v) => setChoice(hk, v)}
+                    options={[["si", "Sí"], ["no", "No"]]}
+                    state={stateOf(hk)}
+                    disabled={submitted}
+                  />
+                  {choiceHint(hk, yesNo(expected[hk].choice))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="cmp-question cmp-question--main">
+          La muestra más homogénea es:
+          <Choice
+            name="eval-c_more"
+            value={answers.c_more}
+            onChange={(v) => setChoice("c_more", v)}
+            options={exC.samples.map((s) => [s.tag, `${s.tag} · ${s.label}`])}
+            state={stateOf("c_more")}
+            disabled={submitted}
+          />
+          {choiceHint("c_more", expected.c_more.choice)}
+        </div>
+        <InterpretationQuestion
+          interp={exC.interp}
+          name="eval-c_interp"
+          value={answers.c_interp}
+          onChange={(v) => setChoice("c_interp", v)}
+          state={stateOf("c_interp")}
+          disabled={submitted}
+        />
+        {results && !results.c_interp && (
+          <p className="ex-feedback ex-feedback--info">Respuesta correcta: {exC.interp.correctText}</p>
+        )}
+      </div>
+
       {/* ---------------- Entrega ---------------- */}
       {!submitted ? (
         <div className="ex-actions" style={{ marginTop: 24 }}>
-          <button className="btn btn--primary" onClick={() => setSubmitted(true)}>
+          <button className="btn btn--primary" onClick={entregar}>
             <Send size={14} /> Entregar y corregir
           </button>
         </div>
@@ -289,15 +412,16 @@ function EvaluationSheet({ evalNo, onNew, onRetry }) {
         <>
           <div className={`score-banner score-banner--${tone}`}>
             <span>
-              Ejercicio 1: {scoreA} / {keysA.length} · Ejercicio 2: {scoreB} / {keysB.length}
+              Ejercicio 1: {scoreA} / {keysA.length} · Ejercicio 2: {scoreB} / {keysB.length} · Ejercicio 3: {scoreC} /{" "}
+              {keysC.length}
             </span>
             <span className="score-banner__num">
-              {scoreA + scoreB} / {total} ({pct}%)
+              {scoreA + scoreB + scoreC} / {total} ({pct}%)
             </span>
           </div>
           <p className="ex-feedback ex-feedback--info">
-            Las respuestas incorrectas muestran el valor correcto. Abajo tenés la resolución completa del
-            ejercicio 2.
+            Las respuestas incorrectas muestran el valor correcto. Abajo tenés la resolución completa de los
+            ejercicios 2 y 3.
           </p>
           <div className="ex-actions" style={{ marginTop: 10 }}>
             <button className="btn btn--ghost" onClick={onRetry}>
@@ -310,6 +434,12 @@ function EvaluationSheet({ evalNo, onNew, onRetry }) {
 
           <h4 className="charts-title" style={{ marginTop: 24 }}>Resolución del ejercicio 2</h4>
           <GroupedWorkedSolution g={B} unit={exB.unit} />
+
+          <h4 className="charts-title" style={{ marginTop: 24 }}>Resolución del ejercicio 3</h4>
+          {exC.samples.map((s, i) => (
+            <SampleSolution key={s.tag} s={s} g={i === 0 ? C.ga : C.gb} />
+          ))}
+          <Conclusion ex={exC} A={C.ga} B={C.gb} v={C.v} />
         </>
       )}
     </div>

@@ -8,6 +8,10 @@ import { RotateCcw, Eye, EyeOff, Sparkles } from "lucide-react";
 import { ungroupedRows, groupedRows, computeStats, round } from "./stats.js";
 import { AnswerInput, Cell_, MeasureCard } from "./ui.jsx";
 import GroupedMeasures from "./GroupedMeasures.jsx";
+import CompareCV from "./CompareCV.jsx";
+import Progress from "./Progress.jsx";
+import FormulaSheet from "./FormulaSheet.jsx";
+import Groups from "./Groups.jsx";
 import Evaluation from "./Evaluation.jsx";
 import { GROUPED_MEASURE_SETS } from "./groupedExamples.js";
 import "./extras.css";
@@ -426,6 +430,7 @@ export default function App() {
   const [measuresIdx, setMeasuresIdx] = useState(0);
   const [measuresMode, setMeasuresMode] = useState("sueltos");
   const [groupedMeasuresIdx, setGroupedMeasuresIdx] = useState(0);
+  const [compareSeed, setCompareSeed] = useState(1);
 
   return (
     <div className="board-app">
@@ -620,6 +625,15 @@ export default function App() {
         <ChalkTab active={tab === "evaluacion"} onClick={() => setTab("evaluacion")}>
           4 · Modo evaluación
         </ChalkTab>
+        <ChalkTab active={tab === "formulas"} onClick={() => setTab("formulas")}>
+          5 · Hoja de fórmulas
+        </ChalkTab>
+        <ChalkTab active={tab === "progreso"} onClick={() => setTab("progreso")}>
+          6 · Mi progreso
+        </ChalkTab>
+        <ChalkTab active={tab === "grupos"} onClick={() => setTab("grupos")}>
+          7 · Armar grupos
+        </ChalkTab>
       </div>
 
       <div className="paper">
@@ -656,6 +670,12 @@ export default function App() {
               >
                 Datos agrupados
               </button>
+              <button
+                className={`seg__btn ${measuresMode === "comparar" ? "seg__btn--active" : ""}`}
+                onClick={() => setMeasuresMode("comparar")}
+              >
+                Comparar muestras (CV)
+              </button>
             </div>
             {measuresMode === "sueltos" ? (
               <MeasuresModule
@@ -663,16 +683,25 @@ export default function App() {
                 set={UNGROUPED_SETS[measuresIdx]}
                 onCycle={() => setMeasuresIdx((i) => (i + 1) % UNGROUPED_SETS.length)}
               />
-            ) : (
+            ) : measuresMode === "agrupados" ? (
               <GroupedMeasures
                 key={`medidas-agrupadas-${groupedMeasuresIdx}`}
                 set={GROUPED_MEASURE_SETS[groupedMeasuresIdx]}
                 onCycle={() => setGroupedMeasuresIdx((i) => (i + 1) % GROUPED_MEASURE_SETS.length)}
               />
+            ) : (
+              <CompareCV
+                key={`comparar-${compareSeed}`}
+                seed={compareSeed}
+                onCycle={() => setCompareSeed((n) => n + 1)}
+              />
             )}
           </>
         )}
         {tab === "evaluacion" && <Evaluation />}
+        {tab === "formulas" && <FormulaSheet />}
+        {tab === "progreso" && <Progress />}
+        {tab === "grupos" && <Groups />}
       </div>
     </div>
   );

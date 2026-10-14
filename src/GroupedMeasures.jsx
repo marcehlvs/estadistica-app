@@ -2,7 +2,8 @@ import { useMemo, useState } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { RotateCcw, Eye, EyeOff } from "lucide-react";
 import { AnswerInput, MeasureCard, DataBox } from "./ui.jsx";
-import { analyzeGrouped, groupedPercentile, parseNum, tolFor, round } from "./stats.js";
+import { Ojive } from "./Charts.jsx";
+import { analyzeGrouped, fmt, groupedPercentile, parseNum, tolFor, round } from "./stats.js";
 
 const PCT_OPTIONS = [10, 20, 30, 40, 60, 70, 80, 90, 95];
 
@@ -55,7 +56,7 @@ export function SturgesDevelopment({ s }) {
 /* Tabla e histograma                                                  */
 /* ---------------------------------------------------------------- */
 
-function GroupedTable({ g }) {
+export function GroupedTable({ g }) {
   return (
     <div className="table-wrap">
       <table className="freq-table">
@@ -153,6 +154,22 @@ export function GroupedWorkedSolution({ g, unit, showSturges = true }) {
       <h4 className="charts-title">Tabla de frecuencias</h4>
       <GroupedTable g={g} />
       <Histogram g={g} />
+
+      <h4 className="charts-title" style={{ marginTop: 24 }}>Ojiva · leer percentiles en el gráfico</h4>
+      <p className="eval-note">
+        La ojiva une los puntos (límite superior, Fᵢ). Para leer un percentil se entra por el eje vertical con su
+        posición (p · n / 100), se avanza hasta tocar la curva y se baja al eje horizontal.{" "}
+        <select className="pct-select" value={pct} onChange={(e) => setPct(Number(e.target.value))} aria-label="Percentil">
+          {PCT_OPTIONS.map((p) => (
+            <option key={p} value={p}>P{p}</option>
+          ))}
+        </select>
+      </p>
+      <Ojive g={g} res={pRes} unit={unit} />
+      <p className="hc-note" style={{ marginTop: 6 }}>
+        P{pct}: posición {pct}/100 · {g.n} = {round(pRes.pos, 2)} → la curva la toca en x ≈ <strong>{round(pRes.value)}</strong> {unit}{" "}
+        (es el mismo valor que da la fórmula de interpolación).
+      </p>
 
       <h4 className="charts-title" style={{ marginTop: 24 }}>Medidas de posición</h4>
       <div className="measures-grid">
@@ -426,7 +443,7 @@ export default function GroupedMeasures({ set, onCycle }) {
               <p className={meanOk ? "ex-feedback ex-feedback--ok" : "ex-feedback ex-feedback--bad"}>
                 {meanOk
                   ? "¡Correcto!"
-                  : `Todavía no — la media real es ${round(g.mean)}. Abrí la tarjeta de la media para ver el desarrollo.`}
+                  : `Todavía no — la media real es ${fmt(g.mean)}. Abrí la tarjeta de la media para ver el desarrollo.`}
               </p>
             )}
           </div>

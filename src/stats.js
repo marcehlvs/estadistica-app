@@ -7,6 +7,11 @@ export function round(x, d = 2) {
   return Math.round(x * f) / f;
 }
 
+/** Número para mostrarle al estudiante, con coma decimal y sin separador de miles (así puede tipearlo igual). */
+export function fmt(x, d = 2) {
+  return String(round(x, d)).replace(".", ",");
+}
+
 /** Lee lo que escribió el estudiante ("12,5", "45 %", "") → número o NaN. */
 export function parseNum(raw) {
   const s = String(raw ?? "").replace("%", "").replace(",", ".").trim();
@@ -336,5 +341,317 @@ export function makeGroupedExercise(seed) {
   }
   throw new Error("No se pudo generar el ejercicio de datos agrupados");
 }
+
+/* ---------------------------------------------------------------- */
+/* Comparar dos muestras con el coeficiente de variación               */
+/* ---------------------------------------------------------------- */
+
+/** Una muestra se considera homogénea si su CV es menor que este valor (%). */
+export const CV_HOMOGENEA = 30;
+
+/**
+ * Análisis de una tabla de frecuencias que YA viene armada.
+ * base = [{ lo, hi, fi }, ...]  (intervalos [lo, hi), el último cerrado).
+ * Misma convención que analyzeGrouped: varianza poblacional, marcas de clase.
+ */
+export function analyzeTable(base) {
+  const n = base.reduce((a, r) => a + r.fi, 0);
+  let cum = 0;
+  const rows0 = base.map((r, i) => {
+    const Fprev = cum;
+    cum += r.fi;
+    const isLast = i === base.length - 1;
+    return {
+      lo: r.lo,
+      hi: r.hi,
+      label: `[${r.lo} - ${r.hi}${isLast ? "]" : ")"}`,
+      mark: (r.lo + r.hi) / 2,
+      fi: r.fi,
+      Fprev,
+      Fi: cum,
+      fr: round((r.fi / n) * 100, 1),
+    };
+  });
+  const sumFx = rows0.reduce((a, r) => a + r.fi * r.mark, 0);
+  const mean = sumFx / n;
+  const rows = rows0.map((r) => ({ ...r, fx: r.fi * r.mark, dev2: r.fi * (r.mark - mean) ** 2 }));
+  const sumDev2 = rows.reduce((a, r) => a + r.dev2, 0);
+  const variance = sumDev2 / n;
+  const sd = Math.sqrt(variance);
+  return { n, A: base[0].hi - base[0].lo, rows, sumFx, mean, sumDev2, variance, sd, cv: (sd / mean) * 100 };
+}
+
+/**
+ * Conclusión de la comparación entre la muestra A y la B (resultados de analyzeTable).
+ *   homA / homB : CV < 30 %
+ *   more        : la más homogénea es la de menor CV
+ *   sdTrap      : el mayor desvío estándar es el de la muestra MÁS homogénea
+ *                 (pasa cuando las medias son muy distintas)
+ */
+export function compareVerdict(A, B) {
+  return {
+    homA: A.cv < CV_HOMOGENEA,
+    homB: B.cv < CV_HOMOGENEA,
+    more: A.cv < B.cv ? "A" : "B",
+    sdTrap: (A.sd - B.sd) * (A.cv - B.cv) < 0,
+  };
+}
+
+const COMPARE_THEMES = [
+  {
+    title: "Sueldos en dos sucursales",
+    unit: "miles de $",
+    labels: ["Sucursal Centro", "Sucursal Norte"],
+    mean: [300, 900],
+    min: 150,
+    intro: (a, b) => `Sueldos mensuales (en miles de pesos) de los empleados de dos sucursales de una cadena de ropa: ${a} y ${b}.`,
+  },
+  {
+    title: "Espera en dos bancos",
+    unit: "minutos",
+    labels: ["Banco del Parque", "Banco de la Plaza"],
+    mean: [6, 24],
+    min: 1,
+    intro: (a, b) => `Minutos que esperaron para ser atendidos los clientes de dos bancos: ${a} y ${b}.`,
+  },
+  {
+    title: "Producción de dos máquinas",
+    unit: "piezas",
+    labels: ["Máquina 1", "Máquina 2"],
+    mean: [80, 260],
+    min: 20,
+    intro: (a, b) => `Piezas producidas por día durante un período, por dos máquinas de una fábrica: ${a} y ${b}.`,
+  },
+  {
+    title: "Duración de baterías",
+    unit: "horas",
+    labels: ["Marca X", "Marca Y"],
+    mean: [60, 200],
+    min: 10,
+    intro: (a, b) => `Horas de duración de baterías de dos marcas, probadas en un laboratorio: ${a} y ${b}.`,
+  },
+  {
+    title: "Edades de los visitantes de dos museos",
+    unit: "años",
+    labels: ["Museo de Ciencias", "Museo de Arte"],
+    mean: [18, 50],
+    min: 6,
+    intro: (a, b) => `Edades (en años) de los visitantes de un día en dos museos: ${a} y ${b}.`,
+  },
+];
+
+/**
+ * Dos variables DISTINTAS (con unidades distintas) medidas en el mismo grupo:
+ * no se pueden comparar los desvíos estándar, hay que usar el CV.
+ */
+const UNIT_THEMES = [
+  {
+    title: "Estatura y peso de estudiantes",
+    intro: "Estatura (en cm) y peso (en kg) de los estudiantes de un curso.",
+    samples: [
+      { label: "Estatura", unit: "cm", mean: [160, 175], cv: [3.5, 5.5], min: 120 },
+      { label: "Peso", unit: "kg", mean: [52, 68], cv: [11, 17], min: 30 },
+    ],
+  },
+  {
+    title: "Sueldo y antigüedad de empleados",
+    intro: "Sueldo mensual (en miles de pesos) y antigüedad (en años) de los empleados de una empresa.",
+    samples: [
+      { label: "Sueldo", unit: "miles de $", mean: [400, 800], cv: [18, 25], min: 150 },
+      { label: "Antigüedad", unit: "años", mean: [6, 14], cv: [40, 55], min: 1 },
+    ],
+  },
+  {
+    title: "Tiempo de estudio y nota",
+    intro: "Minutos de estudio por día y nota del último examen (sobre 100) de los estudiantes de un curso.",
+    samples: [
+      { label: "Minutos de estudio", unit: "minutos", mean: [60, 120], cv: [38, 50], min: 5 },
+      { label: "Nota del examen", unit: "puntos", mean: [60, 80], cv: [12, 20], min: 10 },
+    ],
+  },
+];
+
+/**
+ * Escenarios, para que no todos los problemas den lo mismo:
+ *   uno       → una muestra homogénea y la otra no
+ *   trampa    → la muestra con mayor desvío estándar es la más homogénea
+ *   ambas     → las dos homogéneas (hay que decidir cuál lo es más)
+ *   ninguna   → ninguna homogénea (igual hay una "menos heterogénea")
+ *   unidades  → dos variables con unidades distintas
+ */
+const COMPARE_SCENARIOS = ["uno", "trampa", "ambas", "ninguna", "unidades"];
+
+const NICE_AMPLITUDES = [1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 40, 50, 100, 200];
+
+/** Intervalos de amplitud "linda" (5 a 8 clases) que cubren todos los datos. */
+function bucketize(data) {
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  for (const A of NICE_AMPLITUDES) {
+    const lo0 = Math.floor(min / A) * A;
+    const k = Math.floor((max - lo0) / A) + 1;
+    if (k > 8) continue;
+    if (k < 5) return null;
+    return Array.from({ length: k }, (_, i) => {
+      const lo = lo0 + i * A;
+      const hi = lo + A;
+      const last = i === k - 1;
+      return { lo, hi, fi: data.filter((x) => x >= lo && (last ? x <= hi : x < hi)).length };
+    });
+  }
+  return null;
+}
+
+function sampleData(rng, n, mean, cv, minVal) {
+  const sd = (mean * cv) / 100;
+  return Array.from({ length: n }, () => Math.max(minVal, Math.round(mean + sd * gauss(rng))));
+}
+
+/** Objetivos de CV (%) y de medias para los escenarios con una misma variable. */
+function scenarioTargets(rng, scenario, [mLo, mHi]) {
+  const u = (a, b) => a + rng() * (b - a);
+  const mean1 = u(mLo, mLo + (mHi - mLo) * 0.5);
+  let cvs;
+  let means = [mean1, u(mLo + (mHi - mLo) * 0.3, mHi)];
+  if (scenario === "uno") cvs = [u(12, 22), u(37, 48)];
+  else if (scenario === "ambas") cvs = [u(10, 17), u(21, 26)];
+  else if (scenario === "ninguna") cvs = [u(34, 40), u(44, 54)];
+  else {
+    // trampa: A tiene media mucho mayor, desvío mayor y CV menor
+    cvs = [u(11, 17), u(21, 27)];
+    means = [mean1 * u(2.3, 3), mean1];
+  }
+  if (rng() < 0.5) {
+    cvs.reverse();
+    means.reverse();
+  }
+  return { cvs, means };
+}
+
+const HOMOGENEA_MARGIN = 2.5; // ningún CV queda a menos de 2,5 puntos del 30 %
+const CV_GAP = 3; // los dos CV difieren al menos 3 puntos: hay una ganadora clara
+
+function scenarioHolds(scenario, A, B) {
+  const v = compareVerdict(A, B);
+  if (Math.abs(A.cv - CV_HOMOGENEA) < HOMOGENEA_MARGIN || Math.abs(B.cv - CV_HOMOGENEA) < HOMOGENEA_MARGIN) return false;
+  if (Math.abs(A.cv - B.cv) < CV_GAP) return false;
+  if (scenario === "uno") return v.homA !== v.homB;
+  if (scenario === "ambas") return v.homA && v.homB;
+  if (scenario === "ninguna") return !v.homA && !v.homB;
+  if (scenario === "unidades") return true;
+  return v.homA && v.homB && v.sdTrap && Math.abs(A.sd - B.sd) / Math.max(A.sd, B.sd) > 0.15;
+}
+
+/**
+ * Pregunta de interpretación (opción múltiple, 4 opciones, una correcta).
+ * Las incorrectas son razonamientos inválidos, no afirmaciones sobre los datos,
+ * para que nunca haya dos respuestas posibles.
+ */
+function makeInterpretation(seed, scenario, samples, A, B, v) {
+  const [sa, sb] = samples;
+  const win = v.more === "A" ? sa : sb;
+  let prompt;
+  let right;
+  let wrong;
+  if (scenario === "unidades") {
+    prompt = `${sa.label} está en ${sa.unit} y ${sb.label} en ${sb.unit}. ¿Por qué se las compara con el coeficiente de variación y no con los desvíos estándar?`;
+    right = "Porque las unidades son distintas: el CV no tiene unidad y mide la dispersión relativa a la media.";
+    wrong = [
+      "Porque el desvío estándar solo se puede calcular con datos sin agrupar.",
+      "Porque el desvío estándar nunca puede ser mayor que la media.",
+      "Porque el CV se mide en las mismas unidades que cada variable.",
+    ];
+  } else if (v.sdTrap) {
+    const big = A.sd > B.sd ? sa : sb;
+    prompt = `${big.label} tiene el desvío estándar más grande, pero resultó la muestra más homogénea. ¿Cómo se explica?`;
+    right = `El CV compara el desvío con la media, y la media de ${big.label} también es mayor.`;
+    wrong = [
+      "Hubo un error de cálculo: con mayor desvío no puede ser más homogénea.",
+      "El CV depende solo de la cantidad de datos de cada muestra.",
+      "Porque el desvío estándar y el CV siempre dan resultados opuestos.",
+    ];
+  } else if (scenario === "uno") {
+    const het = v.homA ? sb : sa;
+    const cvHet = v.homA ? B.cv : A.cv;
+    prompt = `${het.label} tiene un CV de ${round(cvHet, 1)} %. ¿Qué indica ese valor?`;
+    right = "Que sus datos están muy dispersos en relación con la media: no es homogénea.";
+    wrong = [
+      "Que sus datos son muy parejos: es homogénea.",
+      "Que hay valores atípicos y hay que descartarlos antes de calcular.",
+      "Que la muestra tiene pocos datos.",
+    ];
+  } else if (scenario === "ambas") {
+    prompt = "Las dos muestras son homogéneas (CV < 30 %). ¿Se puede decir cuál lo es más?";
+    right = `Sí: lo es más ${win.label}, porque su CV es menor.`;
+    wrong = [
+      "No: si las dos tienen CV < 30 % son igual de homogéneas.",
+      "Sí: lo es más la de mayor CV.",
+      "Sí: lo es más la de mayor media.",
+    ];
+  } else {
+    prompt = "Ninguna muestra es homogénea (CV ≥ 30 %). ¿Igual se puede decir cuál es más homogénea?";
+    right = `Sí: ${win.label}, que tiene el menor CV, aunque ninguna llegue a ser homogénea.`;
+    wrong = [
+      "No: sin CV < 30 % no se pueden comparar.",
+      "Sí: la de mayor CV.",
+      "Sí: la de menor desvío estándar, siempre.",
+    ];
+  }
+  // mezcla con semilla: la correcta no queda siempre en el mismo lugar
+  const texts = [right, ...wrong];
+  const order = texts.map((_, i) => i);
+  const rng = mulberry32(seed * 13 + 7);
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  const options = order.map((i, pos) => ({ id: `o${pos}`, text: texts[i] }));
+  return { prompt, options, correct: options[order.indexOf(0)].id, correctText: right };
+}
+
+/**
+ * Ejercicio: dos muestras ya agrupadas (tabla de frecuencias dada), n ≤ 150 cada una.
+ * Se pide x̄, σ y CV de cada una, decidir cuál es más homogénea (CV < 30 %) e interpretar.
+ * Misma semilla → mismo ejercicio.
+ */
+export function makeCompareExercise(seed) {
+  const nSc = COMPARE_SCENARIOS.length;
+  const scenario = COMPARE_SCENARIOS[(seed - 1) % nSc];
+  const cycle = Math.floor((seed - 1) / nSc);
+  const units = scenario === "unidades";
+  const theme = units ? UNIT_THEMES[cycle % UNIT_THEMES.length] : COMPARE_THEMES[cycle % COMPARE_THEMES.length];
+  const sizes = [40, 45, 50, 60, 70, 80];
+  for (let attempt = 0; attempt < 800; attempt++) {
+    const rng = mulberry32(seed * 7919 + attempt * 31 + 5);
+    let specs;
+    if (units) {
+      const u = (a, b) => a + rng() * (b - a);
+      specs = theme.samples.map((sp) => ({ ...sp, meanT: u(...sp.mean), cvT: u(...sp.cv) }));
+      if (rng() < 0.5) specs.reverse();
+    } else {
+      const { cvs, means } = scenarioTargets(rng, scenario, theme.mean);
+      specs = [0, 1].map((i) => ({ label: theme.labels[i], unit: theme.unit, meanT: means[i], cvT: cvs[i], min: theme.min }));
+    }
+    const tables = specs.map((sp) => {
+      const n = sizes[Math.floor(rng() * sizes.length)];
+      return bucketize(sampleData(rng, n, sp.meanT, sp.cvT, sp.min));
+    });
+    if (tables.some((t) => !t || t.some((r) => r.fi === 0))) continue;
+    const [A, B] = tables.map(analyzeTable);
+    if (A.n > 150 || B.n > 150 || !scenarioHolds(scenario, A, B)) continue;
+    const samples = specs.map((sp, i) => ({ tag: i === 0 ? "A" : "B", label: sp.label, unit: sp.unit, base: tables[i] }));
+    return {
+      seed,
+      scenario,
+      title: theme.title,
+      prompt: units ? theme.intro : theme.intro(samples[0].label, samples[1].label),
+      samples,
+      interp: makeInterpretation(seed, scenario, samples, A, B, compareVerdict(A, B)),
+    };
+  }
+  throw new Error("No se pudo generar el ejercicio de comparación");
+}
+
+export { COMPARE_THEMES, COMPARE_SCENARIOS };
 
 export { GROUPED_THEMES, UNGROUPED_THEMES };

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Check, X } from "lucide-react";
+import { fmt } from "./stats.js";
 
 /* Componentes compartidos por App, GroupedMeasures y Evaluation. */
 
@@ -30,7 +31,7 @@ export function AnswerInput({ value, onChange, state, width = 64, suffix, hint, 
       {suffix && <span className="ans-suffix">{suffix}</span>}
       {state === "ok" && <Check size={14} className="ans-icon ans-icon--ok" />}
       {state === "bad" && <X size={14} className="ans-icon ans-icon--bad" />}
-      {state === "bad" && hint !== undefined && <span className="ans-hint">= {hint}</span>}
+      {state === "bad" && hint !== undefined && <span className="ans-hint">= {typeof hint === "number" ? fmt(hint, 6) : hint}</span>}
     </span>
   );
 }
